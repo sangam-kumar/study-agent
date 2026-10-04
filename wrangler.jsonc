@@ -1,0 +1,41 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "study-agent",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-04",
+  "vars": {
+    "LLM_PROVIDER": "gemini",
+    "GEMINI_MODEL": "gemini-2.5-flash",
+    "LLAMA_MODEL": "@cf/meta/llama-3.3-70b-instruct",
+    "GITHUB_REPO": "sangam-kumar/study-repo"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "STUDY_AGENT",
+        "class_name": "StudyAgent"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "StudyAgent"
+      ]
+    }
+  ],
+  "workflows": [
+    {
+      "name": "media-ingestion",
+      "binding": "MEDIA_INGESTION_WORKFLOW",
+      "class_name": "MediaIngestionWorkflow"
+    }
+  ],
+  "ai": {
+    "binding": "AI"
+  },
+  "observability": {
+    "enabled": true
+  }
+}

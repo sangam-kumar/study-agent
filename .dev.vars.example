@@ -1,0 +1,15 @@
+# Copy this file to .dev.vars and fill in real values.
+# .dev.vars is gitignored — this example file is safe to commit.
+#
+# Production secrets are set via: npx wrangler secret put <KEY>
+
+# Google AI Studio — https://aistudio.google.com
+GEMINI_API_KEY=
+
+# Telegram BotFather — create bot via @BotFather, then getUpdates for chat ID
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_SECRET_TOKEN=        # any random 32-char string you generate
+USER_TELEGRAM_CHAT_ID=        # your numeric Telegram user/chat ID
+
+# GitHub Fine-grained PAT — scoped to study-repo, Contents: read+write only
+GITHUB_PAT=

@@ -1,3 +1,5 @@
+import { routeAgentRequest, getAgentByName } from "agents";
+
 // Export classes bound in wrangler.jsonc
 export { StudyAgent } from "./agent";
 export { MediaIngestionWorkflow } from "./workflows/media-ingestion";
@@ -5,6 +7,11 @@ export { MediaIngestionWorkflow } from "./workflows/media-ingestion";
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+
+    // Let SDK handle /agents/* routes (admin UI, WebSocket, etc.)
+    if (url.pathname.startsWith("/agents/")) {
+      return (await routeAgentRequest(request, env)) ?? new Response("Not found", { status: 404 });
+    }
 
     // Health check endpoint
     if (url.pathname === "/health" || url.pathname === "/") {
@@ -20,7 +27,7 @@ export default {
       );
     }
 
-    // Telegram webhook endpoint stub (implemented in Phase 2)
+    // Telegram webhook endpoint
     if (url.pathname === "/webhook/telegram") {
       if (request.method !== "POST") {
         return new Response("Method Not Allowed", { status: 405 });
@@ -37,7 +44,14 @@ export default {
         console.warn("[dev] TELEGRAM_SECRET_TOKEN not set — skipping webhook auth");
       }
 
-      return new Response(JSON.stringify({ ok: true, status: "stub_acknowledged" }), {
+      // Forward to the Durable Object Agent via RPC
+      const agent = await getAgentByName(env.STUDY_AGENT, "singleton");
+      const update = await request.json();
+      
+      // Process asynchronously so we can quickly ack the webhook
+      ctx.waitUntil(agent.handleTelegramUpdate(update));
+
+      return new Response(JSON.stringify({ ok: true, status: "acknowledged" }), {
         headers: { "Content-Type": "application/json" },
       });
     }

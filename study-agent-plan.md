@@ -91,23 +91,23 @@ flowchart TD
     P5 --> P6["Phase 6: Alarms, Ambient Cues & E2E Validation"]
 ```
 
-### Phase 1: Project Scaffolding & Configuration
+### Phase 1: Project Scaffolding & Configuration (Completed)
 * **Phase Doc:** `docs/phase-1-scaffolding.md`
 * **Sub-steps:**
-  - 1.1: Initialize `package.json` with scripts and core dependencies.
-  - 1.2: Configure `tsconfig.json` for Cloudflare Workers & modern ESNext.
-  - 1.3: Configure `wrangler.jsonc` (bindings for Durable Objects + SQLite, Workflows, Assets/AI).
-  - 1.4: Set up folder structure and stub entrypoint files.
-  - 1.5: Validate compilation via `npm run typecheck` and `npx wrangler types`.
+  - [x] 1.1: Initialize `package.json` with scripts and core dependencies.
+  - [x] 1.2: Configure `tsconfig.json` for Cloudflare Workers & modern ESNext.
+  - [x] 1.3: Configure `wrangler.jsonc` (bindings for Durable Objects + SQLite, Workflows, Assets/AI).
+  - [x] 1.4: Set up folder structure and stub entrypoint files.
+  - [x] 1.5: Validate compilation via `npm run typecheck` and `npx wrangler types`.
 
-### Phase 2: Telegram Gateway & Security Layer
+### Phase 2: Telegram Gateway & Security Layer (Completed)
 * **Phase Doc:** `docs/phase-2-telegram.md`
-* **Logistics Check:** Verify `TELEGRAM_BOT_TOKEN`, `TELEGRAM_SECRET_TOKEN`, `USER_TELEGRAM_CHAT_ID`.
+* **Logistics Check:** Verified `TELEGRAM_BOT_TOKEN`, `TELEGRAM_SECRET_TOKEN`, `USER_TELEGRAM_CHAT_ID`.
 * **Sub-steps:**
-  - 2.1: Implement webhook endpoint with `X-Telegram-Bot-Api-Secret-Token` validation.
-  - 2.2: Add chat ID access-control guard.
-  - 2.3: Build lightweight Telegram API client (`sendMessage`, `getFile`).
-  - 2.4: Local validation with mock webhook payloads.
+  - [x] 2.1: Implement webhook endpoint with `X-Telegram-Bot-Api-Secret-Token` validation.
+  - [x] 2.2: Add chat ID access-control guard.
+  - [x] 2.3: Build lightweight Telegram API client (`sendMessage`, `getFile`).
+  - [x] 2.4: Live deployment and webhook verification with Telegram Bot API.
 
 ### Phase 3: Durable Object Agent & SQLite State Layer
 * **Phase Doc:** `docs/phase-3-durable-object.md`

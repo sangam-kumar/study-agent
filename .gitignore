@@ -7,3 +7,6 @@ dist/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Cloudflare Submission Docs
+prompt-history.md

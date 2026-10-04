@@ -109,13 +109,13 @@ flowchart TD
   - [x] 2.3: Build lightweight Telegram API client (`sendMessage`, `getFile`).
   - [x] 2.4: Live deployment and webhook verification with Telegram Bot API.
 
-### Phase 3: Durable Object Agent & SQLite State Layer
+### Phase 3: Durable Object Agent & SQLite State Layer (Completed)
 * **Phase Doc:** `docs/phase-3-durable-object.md`
 * **Sub-steps:**
-  - 3.1: Define embedded SQLite schema (`bot_state`, `interaction_logs`, `reading_queue`, `workout_logs`, `reminders`).
-  - 3.2: Implement `StudyAgent` Durable Object class.
-  - 3.3: Implement dynamic rescheduling and snooze handlers (`snooze_until`, `day_override`).
-  - 3.4: Local validation of SQLite state queries inside DO storage.
+  - [x] 3.1: Define embedded SQLite schema (`bot_state`, `interaction_logs`, `reading_queue`, `workout_logs`, `reminders`) in `src/db/schema.ts`.
+  - [x] 3.2: Implement `StudyAgent.onStart()` SQLite initialization and migration.
+  - [x] 3.3: Implement typed CRUD operations and dynamic snooze handlers (`snooze_until`, `clearSnooze`).
+  - [x] 3.4: Wire Telegram updates to `interaction_logs` & implement state inspection commands (`/status`, `/queue`, `/snooze`, `/unsnooze`, `/recent`).
 
 ### Phase 4: AI Pipeline (Gemini Primary + CF Fallback)
 * **Phase Doc:** `docs/phase-4-ai-pipeline.md`

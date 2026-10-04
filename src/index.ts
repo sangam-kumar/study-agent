@@ -1,7 +1,9 @@
 import { routeAgentRequest, getAgentByName } from "agents";
 
+import { StudyAgent } from "./agent";
+
 // Export classes bound in wrangler.jsonc
-export { StudyAgent } from "./agent";
+export { StudyAgent };
 export { MediaIngestionWorkflow } from "./workflows/media-ingestion";
 
 export default {
@@ -45,7 +47,7 @@ export default {
       }
 
       // Forward to the Durable Object Agent via RPC
-      const agent = await getAgentByName(env.STUDY_AGENT, "singleton");
+      const agent = await getAgentByName<Env, StudyAgent>(env.STUDY_AGENT, "singleton");
       const update = await request.json();
       
       // Process asynchronously so we can quickly ack the webhook

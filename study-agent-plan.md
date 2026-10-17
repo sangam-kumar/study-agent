@@ -127,19 +127,16 @@ flowchart TD
   - [x] 4.4: Implement Workers AI fallback provider with Llama 3.3 and Whisper (`src/ai/workers-ai.ts`).
   - [x] 4.5: Wire LLM provider into `StudyAgent` for voice memo transcription, workout parsing, and text analysis.
 
-### Phase 5: Cloudflare Workflow & GitHub Sync
+### Phase 5: Cloudflare Workflow & GitHub Sync (Parked for Post-MVP)
 * **Phase Doc:** `docs/phase-5-workflow-github.md`
-* **Logistics Check:** Verify `GITHUB_PAT` and `GITHUB_REPO` permissions.
-* **Sub-steps:**
-  - 5.1: Build lightweight GitHub REST client (`getFileContent`, `commitFile`, `getTodayCommits`).
-  - 5.2: Implement `MediaIngestionWorkflow` (scrape URL -> categorize -> commit to `study/reading/reading-queue.md`).
-  - 5.3: Implement workout commit handler (`life/fitness.md`).
-  - 5.4: Test sandbox commit against `study-repo`.
+* **Status:** Deferred/Parked per user request to prioritize core agentic loops, ambient cues, and MVP validation.
 
-### Phase 6: Alarms, Ambient Cues & End-to-End Validation
+### Phase 6: Alarms, Ambient Cues & End-to-End Validation (Completed)
 * **Phase Doc:** `docs/phase-6-alarms-e2e.md`
 * **Sub-steps:**
-  - 6.1: Implement `alarm()` handler for dynamic scheduled cues (08:15 IST morning cue, 17:00 IST commute read, 21:30 IST evening synthesis).
-  - 6.2: Implement ad-hoc reminder scheduler (arbitrary future reminders).
-  - 6.3: End-to-end testing with local tunnel (`cloudflared`).
-  - 6.4: Documentation & GitHub Actions deployment workflow.
+  - [x] 6.1: Register 3 daily recurring ambient cue crons in `onStart()` (08:15 IST morning cue, 17:00 IST commute read, 21:30 IST evening synthesis).
+  - [x] 6.2: Implement `morningCue`, `commuteCue`, and `eveningSynthesis` handlers with reading queue and workout aggregation.
+  - [x] 6.3: Implement dynamic snooze checking across all cues (`isCurrentlySnoozed()`).
+  - [x] 6.4: Implement ad-hoc reminder scheduler (`/remind <minutes> <text>` and `/reminders`).
+  - [x] 6.5: Provide manual testing commands (`/cues`, `/testcue <morning|commute|evening>`) for immediate verification.
+

@@ -14,7 +14,23 @@ export class StudyAgent extends Agent<Env> {
   // Initialized once when the Durable Object wakes up
   override async onStart(): Promise<void> {
     this.initDatabase();
-    console.log("StudyAgent initialized with SQLite schema");
+    await this.registerAmbientCues();
+    console.log("StudyAgent initialized with SQLite schema and ambient cue schedules");
+  }
+
+  /**
+   * Register the 3 daily ambient cue cron schedules.
+   * Idempotent — Agents SDK deduplicates by callback+cron expression, safe to call on every DO wake.
+   * All times in UTC (IST = UTC+5:30):
+   *   08:15 IST → 02:45 UTC  cron: "45 2 * * *"
+   *   17:00 IST → 11:30 UTC  cron: "30 11 * * *"
+   *   21:30 IST → 16:00 UTC  cron: "0 16 * * *"
+   */
+  private async registerAmbientCues(): Promise<void> {
+    await this.schedule("45 2 * * *",  "morningCue",       "daily-morning");
+    await this.schedule("30 11 * * *", "commuteCue",       "daily-commute");
+    await this.schedule("0 16 * * *",  "eveningSynthesis", "daily-evening");
+    console.log("Ambient cue schedules registered");
   }
 
   /**
@@ -256,6 +272,8 @@ export class StudyAgent extends Agent<Env> {
           "",
           "• <code>/remind &lt;minutes&gt; &lt;text&gt;</code> - Set a reminder (e.g. <code>/remind 5 Take a break</code>)",
           "• <code>/reminders</code> - List upcoming pending reminders",
+          "• <code>/cues</code> - View daily ambient cue schedules & status",
+          "• <code>/testcue &lt;morning|commute|evening&gt;</code> - Test fire an ambient cue",
           "• <code>/status</code> - View SQLite database stats & snooze status",
           "• <code>/queue</code> - List pending reading queue items",
           "• <code>/snooze &lt;hours&gt;</code> - Pause ambient reminders for X hours",
@@ -385,12 +403,198 @@ export class StudyAgent extends Agent<Env> {
         break;
       }
 
+      case "/cues": {
+        const snooze = this.getSnoozeStatus();
+        const snoozeStr = snooze.snoozed
+          ? `⏸️ <b>Snoozed until:</b> ${snooze.until}`
+          : "▶️ <b>Active</b>";
+
+        const lines = [
+          "⏰ <b>Scheduled Daily Ambient Cues (IST)</b>",
+          "",
+          "• <b>08:15 IST</b> — Morning Focus & Serendipity Read (<code>morningCue</code>)",
+          "• <b>17:00 IST</b> — Commute Reading Cue (<code>commuteCue</code>)",
+          "• <b>21:30 IST</b> — Evening Synthesis & Daily Summary (<code>eveningSynthesis</code>)",
+          "",
+          `• <b>Snooze Status:</b> ${snoozeStr}`,
+          "",
+          "💡 <i>To test right now: <code>/testcue morning</code>, <code>/testcue commute</code>, or <code>/testcue evening</code></i>",
+        ];
+        await telegram.sendMessage(chatId, lines.join("\n"));
+        break;
+      }
+
+      case "/testcue": {
+        const target = (args[0] ?? "").toLowerCase();
+        if (target === "morning") {
+          await telegram.sendMessage(chatId, "🧪 <i>Triggering test morning cue...</i>");
+          await this.morningCue("manual-test");
+        } else if (target === "commute") {
+          await telegram.sendMessage(chatId, "🧪 <i>Triggering test commute cue...</i>");
+          await this.commuteCue("manual-test");
+        } else if (target === "evening") {
+          await telegram.sendMessage(chatId, "🧪 <i>Triggering test evening synthesis...</i>");
+          await this.eveningSynthesis("manual-test");
+        } else {
+          await telegram.sendMessage(
+            chatId,
+            "⚠️ <b>Usage:</b> <code>/testcue &lt;morning|commute|evening&gt;</code>"
+          );
+        }
+        break;
+      }
+
       default: {
         await telegram.sendMessage(chatId, `❓ Unknown command <code>${command}</code>. Type <code>/help</code> for available commands.`);
         break;
       }
     }
   }
+
+  // ─── Snooze Guard Helper ────────────────────────────────────────────────────
+
+  /**
+   * Returns true if there is an active snooze — callers should bail out early.
+   */
+  private isCurrentlySnoozed(): boolean {
+    return this.getSnoozeStatus().snoozed;
+  }
+
+  // ─── Ambient Cue Handlers ────────────────────────────────────────────────────
+
+  /**
+   * 08:15 IST daily — sends daily focus + a serendipitous reading queue item.
+   * Invoked by Agents SDK cron scheduler.
+   */
+  async morningCue(_payload: string): Promise<void> {
+    if (this.isCurrentlySnoozed()) {
+      console.log("[morningCue] Skipped — snooze active");
+      return;
+    }
+
+    const telegram = new TelegramClient(this.env.TELEGRAM_BOT_TOKEN);
+    const chatId = this.env.USER_TELEGRAM_CHAT_ID;
+    if (!chatId) return;
+
+    const items = this.getReadingQueue("queued", 1);
+    const stats = this.getStats();
+
+    const parts: string[] = [
+      "☀️ <b>Good morning! Here's your morning brief.</b>",
+      "",
+    ];
+
+    if (items.length > 0) {
+      const item = items[0];
+      const label = item.category ? `[${item.category}]` : "";
+      const title = item.title ?? item.url;
+      parts.push(`📖 <b>Serendipity Read ${label}:</b>`);
+      parts.push(`<a href="${item.url}">${title}</a>`);
+      if (item.estimated_minutes) parts.push(`⏱ ~${item.estimated_minutes} min read`);
+      // Mark as served
+      this.sql`UPDATE reading_queue SET status = 'served' WHERE id = ${item.id}`;
+    } else {
+      parts.push("📭 Reading queue is empty — drop a link today!");
+    }
+
+    parts.push("");
+    parts.push(`🗂 <b>Today's stats:</b> ${stats.totalWorkouts} workouts · ${stats.totalLogs} interactions logged`);
+    parts.push("");
+    parts.push("<i>Reply with a text or voice memo to log workouts, thoughts, or use /help.</i>");
+
+    this.logInteraction("system_cron", "morning_cue_fired");
+    await telegram.sendMessage(chatId, parts.join("\n"));
+  }
+
+  /**
+   * 17:00 IST daily — serves the next unread item from the reading queue.
+   * Invoked by Agents SDK cron scheduler.
+   */
+  async commuteCue(_payload: string): Promise<void> {
+    if (this.isCurrentlySnoozed()) {
+      console.log("[commuteCue] Skipped — snooze active");
+      return;
+    }
+
+    const telegram = new TelegramClient(this.env.TELEGRAM_BOT_TOKEN);
+    const chatId = this.env.USER_TELEGRAM_CHAT_ID;
+    if (!chatId) return;
+
+    const items = this.getReadingQueue("queued", 1);
+
+    if (items.length === 0) {
+      await telegram.sendMessage(chatId, "🚌 <b>Commute time!</b> Your reading queue is clear. Drop a link to queue something.");
+      return;
+    }
+
+    const item = items[0];
+    const label = item.category ? ` [${item.category}]` : "";
+    const title = item.title ?? item.url;
+    const mins = item.estimated_minutes ? ` · ⏱ ~${item.estimated_minutes} min` : "";
+
+    // Mark as served
+    this.sql`UPDATE reading_queue SET status = 'served' WHERE id = ${item.id}`;
+    this.logInteraction("system_cron", "commute_cue_fired");
+
+    await telegram.sendMessage(
+      chatId,
+      `🚌 <b>Commute read${label}${mins}:</b>\n\n<a href="${item.url}">${title}</a>`
+    );
+  }
+
+  /**
+   * 21:30 IST daily — pre-filled evening synthesis from today's workout logs & interactions.
+   * Invoked by Agents SDK cron scheduler.
+   */
+  async eveningSynthesis(_payload: string): Promise<void> {
+    if (this.isCurrentlySnoozed()) {
+      console.log("[eveningSynthesis] Skipped — snooze active");
+      return;
+    }
+
+    const telegram = new TelegramClient(this.env.TELEGRAM_BOT_TOKEN);
+    const chatId = this.env.USER_TELEGRAM_CHAT_ID;
+    if (!chatId) return;
+
+    // Query today's workout logs (date = YYYY-MM-DD in IST)
+    const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }); // YYYY-MM-DD
+    const todayWorkouts = this.sql<WorkoutLogRow>` 
+      SELECT id, date, workout_type, exercises_json, notes, created_at
+      FROM workout_logs WHERE date = ${today} ORDER BY id DESC`;
+
+    // Count today's interactions (logged since midnight IST)
+    const todayInteractions = this.sql<{ count: number }>`
+      SELECT COUNT(*) as count FROM interaction_logs
+      WHERE created_at >= ${today}`;
+    const interactionCount = todayInteractions[0]?.count ?? 0;
+
+    const parts: string[] = [
+      "🌙 <b>Evening check-in — here's your day:</b>",
+      "",
+    ];
+
+    if (todayWorkouts.length > 0) {
+      todayWorkouts.forEach((w) => {
+        let exercises: Array<{ name: string; sets: number; reps: number; weight_kg?: number }> = [];
+        try { exercises = JSON.parse(w.exercises_json); } catch {}
+        const exerciseStr = exercises.map((e) =>
+          `${e.name} ${e.sets}x${e.reps}${e.weight_kg ? ` @ ${e.weight_kg}kg` : ""}`
+        ).join(", ");
+        parts.push(`🏋️ <b>${w.workout_type}:</b> ${exerciseStr}`);
+      });
+    } else {
+      parts.push("🏋️ No workout logged today.");
+    }
+
+    parts.push(`💬 ${interactionCount} interaction${interactionCount !== 1 ? "s" : ""} logged today.`);
+    parts.push("");
+    parts.push("<i>Anything to add before closing the day? Reply with a note or voice memo — or send /status to review your full state.</i>");
+
+    this.logInteraction("system_cron", "evening_synthesis_fired");
+    await telegram.sendMessage(chatId, parts.join("\n"));
+  }
+
+  // ─── Ad-hoc Reminder ────────────────────────────────────────────────────────
 
   /**
    * Invoked by Agents SDK scheduler when a reminder alarm fires.

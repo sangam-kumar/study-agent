@@ -33,12 +33,13 @@ export class WorkersAIProvider implements LLMProvider {
 
   async parseText(text: string): Promise<TextParseResult> {
     const systemPrompt = `You are an AI assistant parsing user inputs for a personal tracking system.
-Determine intent from: ["workout_log", "study_note", "snooze", "general"].
+Determine intent from: ["workout_log", "study_note", "snooze", "reminder", "general"].
 Return JSON with format:
 {
-  "intent": "workout_log" | "study_note" | "snooze" | "general",
+  "intent": "workout_log" | "study_note" | "snooze" | "reminder" | "general",
   "workout": { "workout_type": string, "exercises": [{ "name": string, "sets": number, "reps": number, "weight_kg": number }], "notes": string },
   "snooze": { "action": "snooze" | "cancel" | "skip_day", "duration_hours": number, "reason": string },
+  "reminder": { "reminder_text": string, "delay_minutes": number },
   "note": { "topic": string, "summary": string, "key_takeaways": string[] },
   "replyText": "short user-facing reply"
 }`;
@@ -67,6 +68,7 @@ Return JSON with format:
       transcript,
       intent: parsed.intent === "snooze" ? "general" : parsed.intent,
       workout: parsed.workout,
+      reminder: parsed.reminder,
       note: parsed.note,
     };
   }

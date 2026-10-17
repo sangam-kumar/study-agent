@@ -23,18 +23,25 @@ export interface StudyNoteExtraction {
   key_takeaways: string[];
 }
 
+export interface ReminderExtraction {
+  reminder_text: string;
+  delay_minutes: number;
+}
+
 export interface TextParseResult {
-  intent: "workout_log" | "study_note" | "snooze" | "general";
+  intent: "workout_log" | "study_note" | "snooze" | "reminder" | "general";
   workout?: WorkoutExtraction;
   snooze?: ScheduleOverrideExtraction;
+  reminder?: ReminderExtraction;
   note?: StudyNoteExtraction;
   replyText?: string;
 }
 
 export interface AudioProcessingResult {
   transcript: string;
-  intent: "workout_log" | "study_note" | "general";
+  intent: "workout_log" | "study_note" | "reminder" | "general";
   workout?: WorkoutExtraction;
+  reminder?: ReminderExtraction;
   note?: StudyNoteExtraction;
 }
 
@@ -57,7 +64,7 @@ export const TEXT_PARSE_JSON_SCHEMA = {
   properties: {
     intent: {
       type: "string",
-      enum: ["workout_log", "study_note", "snooze", "general"],
+      enum: ["workout_log", "study_note", "snooze", "reminder", "general"],
     },
     workout: {
       type: "object",
@@ -89,6 +96,14 @@ export const TEXT_PARSE_JSON_SCHEMA = {
       },
       required: ["action", "reason"],
     },
+    reminder: {
+      type: "object",
+      properties: {
+        reminder_text: { type: "string", description: "The content/task to be reminded of" },
+        delay_minutes: { type: "number", description: "Estimated delay in minutes from now when the reminder should fire" },
+      },
+      required: ["reminder_text", "delay_minutes"],
+    },
     note: {
       type: "object",
       properties: {
@@ -115,7 +130,7 @@ export const AUDIO_PARSE_JSON_SCHEMA = {
     transcript: { type: "string", description: "Verbatim transcript of the audio" },
     intent: {
       type: "string",
-      enum: ["workout_log", "study_note", "general"],
+      enum: ["workout_log", "study_note", "reminder", "general"],
     },
     workout: {
       type: "object",
@@ -137,6 +152,14 @@ export const AUDIO_PARSE_JSON_SCHEMA = {
         notes: { type: "string" },
       },
       required: ["workout_type", "exercises"],
+    },
+    reminder: {
+      type: "object",
+      properties: {
+        reminder_text: { type: "string", description: "The content/task to be reminded of" },
+        delay_minutes: { type: "number", description: "Estimated delay in minutes from now when the reminder should fire" },
+      },
+      required: ["reminder_text", "delay_minutes"],
     },
     note: {
       type: "object",

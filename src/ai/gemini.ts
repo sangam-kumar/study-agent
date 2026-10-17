@@ -71,7 +71,8 @@ Analyze the following user input and determine whether it is:
 1. "workout_log": A workout record (exercises, sets, reps, weight in kg, notes).
 2. "study_note": Study notes, summaries, or thoughts on a topic.
 3. "snooze": A request to snooze, pause notifications, skip study blocks, or reschedule.
-4. "general": General conversation or query.
+4. "reminder": A request to set a reminder, alarm, or task alert at some future time or delay (e.g., "remind me in 30 minutes to drink water", "remind me in 2 hours to call mom", "set a reminder for 15 mins to check email"). Extract reminder_text and calculate delay_minutes (in minutes from now).
+5. "general": General conversation or query.
 
 Extract all relevant fields strictly into the schema. For replyText, provide a concise, friendly confirmation.
 
@@ -88,9 +89,10 @@ ${text}`;
 
     const prompt = `You are an intelligent assistant processing an audio voice memo.
 1. Transcribe the audio verbatim.
-2. Determine if the speech represents a workout_log, a study_note, or general thoughts.
-3. If it is a workout, extract the exercises, sets, reps, and weights.
-4. If it is a study note or thought, extract the topic, summary, and key takeaways.
+2. Determine if the speech represents a workout_log, a study_note, a reminder, or general thoughts.
+3. If it is a reminder (e.g. "remind me in 15 minutes to call mom"), extract the reminder_text and delay_minutes (in minutes).
+4. If it is a workout, extract the exercises, sets, reps, and weights.
+5. If it is a study note or thought, extract the topic, summary, and key takeaways.
 Output strictly following the JSON schema.`;
 
     const contents = [

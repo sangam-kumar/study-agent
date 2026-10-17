@@ -63,3 +63,12 @@ Telegram commands available for end-to-end testing:
 - `/unsnooze` — Clear snooze and re-enable cues.
 - `/remind <minutes> <text>` — Test arbitrary future ad-hoc reminder scheduler.
 
+---
+
+## 5. Casual Natural Language & Voice Reminders
+
+In addition to the `/remind` slash command, the AI pipeline natively extracts reminders from casual messages:
+- **Casual text**: e.g., *"remind me in 30 minutes to drink water"*, *"can you set a reminder for 2 hours to check oven"*.
+- **Voice memos**: speak any reminder into Telegram voice messages; Gemini will transcribe verbatim and extract `{ reminder_text, delay_minutes }`.
+- Automatically schedules the alarm via Cloudflare Agents SDK and inserts the record into SQLite `reminders`.
+

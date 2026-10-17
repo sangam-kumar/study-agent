@@ -182,6 +182,15 @@ export class StudyAgent extends Agent<Env> {
             chatId,
             `🏋️ <b>Workout Logged (${result.workout.workout_type})</b>\n\n${exercisesList}${result.workout.notes ? `\n\n<i>Note: ${result.workout.notes}</i>` : ""}\n\n<i>Transcript: "${result.transcript}"</i>`
           );
+        } else if (result.intent === "reminder" && result.reminder) {
+          const confirmMsg = await this.scheduleAdhocReminder(
+            result.reminder.delay_minutes,
+            result.reminder.reminder_text
+          );
+          await telegram.sendMessage(
+            chatId,
+            `${confirmMsg}\n\n<i>Transcript: "${result.transcript}"</i>`
+          );
         } else if (result.intent === "study_note" && result.note) {
           const takeaways = result.note.key_takeaways.map((t) => `• ${t}`).join("\n");
           await telegram.sendMessage(
@@ -235,6 +244,12 @@ export class StudyAgent extends Agent<Env> {
               chatId,
               `😴 <b>Snooze Activated!</b> Ambient cues paused until <b>${untilDate} IST</b> (${hours}h).\n<i>Reason: ${parsed.snooze.reason}</i>`
             );
+          } else if (parsed.intent === "reminder" && parsed.reminder) {
+            const confirmMsg = await this.scheduleAdhocReminder(
+              parsed.reminder.delay_minutes,
+              parsed.reminder.reminder_text
+            );
+            await telegram.sendMessage(chatId, confirmMsg);
           } else if (parsed.intent === "study_note" && parsed.note) {
             const takeaways = parsed.note.key_takeaways.map((t) => `• ${t}`).join("\n");
             await telegram.sendMessage(
@@ -348,23 +363,8 @@ export class StudyAgent extends Agent<Env> {
           return;
         }
 
-        const delaySeconds = Math.max(1, Math.round(minutes * 60));
-        const triggerAtMs = Date.now() + delaySeconds * 1000;
-
-        // 1. Insert into SQLite table
-        this.sql`INSERT INTO reminders (reminder_type, trigger_at, payload_json, status)
-                 VALUES ('adhoc', ${triggerAtMs}, ${JSON.stringify({ text: reminderText })}, 'pending')`;
-        const reminderId = this.sql<{ id: number }>`SELECT last_insert_rowid() as id`[0]?.id;
-
-        // 2. Schedule via Agents SDK
-        await this.schedule(delaySeconds, "triggerReminder", JSON.stringify({ reminderId, text: reminderText }));
-
-        // 3. Confirm to user
-        const triggerTimeStr = new Date(triggerAtMs).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" });
-        await telegram.sendMessage(
-          chatId,
-          `⏰ <b>Reminder scheduled!</b>\n\n• <b>Message:</b> "${reminderText}"\n• <b>Fires at:</b> ${triggerTimeStr} IST (${minutes} min)`
-        );
+        const confirmMsg = await this.scheduleAdhocReminder(minutes, reminderText);
+        await telegram.sendMessage(chatId, confirmMsg);
         break;
       }
 
@@ -595,6 +595,28 @@ export class StudyAgent extends Agent<Env> {
   }
 
   // ─── Ad-hoc Reminder ────────────────────────────────────────────────────────
+
+  /**
+   * Schedule an ad-hoc reminder via Agents SDK alarm scheduler and insert into SQLite.
+   * Returns a formatted confirmation string.
+   */
+  async scheduleAdhocReminder(minutes: number, reminderText: string): Promise<string> {
+    const validMinutes = isNaN(minutes) || minutes <= 0 ? 5 : minutes;
+    const delaySeconds = Math.max(1, Math.round(validMinutes * 60));
+    const triggerAtMs = Date.now() + delaySeconds * 1000;
+
+    // 1. Insert into SQLite table
+    this.sql`INSERT INTO reminders (reminder_type, trigger_at, payload_json, status)
+             VALUES ('adhoc', ${triggerAtMs}, ${JSON.stringify({ text: reminderText })}, 'pending')`;
+    const reminderId = this.sql<{ id: number }>`SELECT last_insert_rowid() as id`[0]?.id;
+
+    // 2. Schedule via Agents SDK
+    await this.schedule(delaySeconds, "triggerReminder", JSON.stringify({ reminderId, text: reminderText }));
+
+    // 3. Formatted confirmation string
+    const triggerTimeStr = new Date(triggerAtMs).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" });
+    return `⏰ <b>Reminder scheduled!</b>\n\n• <b>Message:</b> "${reminderText}"\n• <b>Fires at:</b> ${triggerTimeStr} IST (${validMinutes} min)`;
+  }
 
   /**
    * Invoked by Agents SDK scheduler when a reminder alarm fires.

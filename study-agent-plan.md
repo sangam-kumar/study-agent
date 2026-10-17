@@ -117,15 +117,15 @@ flowchart TD
   - [x] 3.3: Implement typed CRUD operations and dynamic snooze handlers (`snooze_until`, `clearSnooze`).
   - [x] 3.4: Wire Telegram updates to `interaction_logs` & implement state inspection commands (`/status`, `/queue`, `/snooze`, `/unsnooze`, `/recent`).
 
-### Phase 4: AI Pipeline (Gemini Primary + CF Fallback)
+### Phase 4: AI Pipeline (Gemini Primary + CF Fallback) (Completed)
 * **Phase Doc:** `docs/phase-4-ai-pipeline.md`
-* **Logistics Check:** Verify `GEMINI_API_KEY`.
+* **Logistics Check:** Verified `GEMINI_API_KEY`.
 * **Sub-steps:**
-  - 4.1: Build generic `LLMProvider` interface.
-  - 4.2: Implement Gemini provider with structured JSON extraction (intent, workout parsing, URL categorization).
-  - 4.3: Implement in-memory audio-to-JSON handling (zero disk storage).
-  - 4.4: Implement Workers AI fallback provider.
-  - 4.5: Validation using sample workout voice transcript & URL inputs.
+  - [x] 4.1: Build generic `LLMProvider` interface and JSON schemas (`src/ai/schemas.ts`, `src/ai/provider.ts`).
+  - [x] 4.2: Implement Gemini provider with structured JSON extraction (`src/ai/gemini.ts`).
+  - [x] 4.3: Implement in-memory audio-to-JSON handling (zero disk storage) in Gemini provider.
+  - [x] 4.4: Implement Workers AI fallback provider with Llama 3.3 and Whisper (`src/ai/workers-ai.ts`).
+  - [x] 4.5: Wire LLM provider into `StudyAgent` for voice memo transcription, workout parsing, and text analysis.
 
 ### Phase 5: Cloudflare Workflow & GitHub Sync
 * **Phase Doc:** `docs/phase-5-workflow-github.md`

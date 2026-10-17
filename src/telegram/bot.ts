@@ -31,4 +31,13 @@ export class TelegramClient {
     }
     return `https://api.telegram.org/file/bot${this.token}/${data.result.file_path}`;
   }
+
+  async downloadFileAsBuffer(fileId: string): Promise<ArrayBuffer> {
+    const downloadUrl = await this.getFileDownloadUrl(fileId);
+    const res = await fetch(downloadUrl);
+    if (!res.ok) {
+      throw new Error(`Failed to download Telegram file [${res.status}]`);
+    }
+    return await res.arrayBuffer();
+  }
 }

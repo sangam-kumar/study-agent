@@ -1,28 +1,63 @@
-export interface WorkoutExtraction {
-  workout_type: string;
-  exercises: Array<{
-    name: string;
-    sets: number;
-    reps: number;
-    weight_kg?: number;
-  }>;
-  notes?: string;
-}
+import {
+  LLMProvider,
+  TextParseResult,
+  AudioProcessingResult,
+  UrlClassification,
+} from "./schemas";
+import { GeminiProvider } from "./gemini";
+import { WorkersAIProvider } from "./workers-ai";
 
-export interface UrlClassification {
-  category: string;
-  estimated_minutes: number;
-  title: string;
-  summary: string;
-}
+export class FallbackLLMProvider implements LLMProvider {
+  private gemini: GeminiProvider;
+  private workersAi: WorkersAIProvider;
 
-export interface LLMProvider {
-  classifyIntent(text: string): Promise<string>;
-  extractWorkout(input: string | ArrayBuffer): Promise<WorkoutExtraction>;
-  classifyUrlContent(title: string, content: string): Promise<UrlClassification>;
+  constructor(private env: Env) {
+    this.gemini = new GeminiProvider(env);
+    this.workersAi = new WorkersAIProvider(env);
+  }
+
+  async parseText(text: string): Promise<TextParseResult> {
+    try {
+      if (this.env.GEMINI_API_KEY) {
+        return await this.gemini.parseText(text);
+      }
+    } catch (err) {
+      console.warn("Gemini parseText failed, falling back to Workers AI:", err);
+    }
+    return await this.workersAi.parseText(text);
+  }
+
+  async processAudio(audioBuffer: ArrayBuffer, mimeType?: string): Promise<AudioProcessingResult> {
+    try {
+      if (this.env.GEMINI_API_KEY) {
+        return await this.gemini.processAudio(audioBuffer, mimeType);
+      }
+    } catch (err) {
+      console.warn("Gemini processAudio failed, falling back to Workers AI:", err);
+    }
+    return await this.workersAi.processAudio(audioBuffer);
+  }
+
+  async classifyUrlContent(title: string, content: string): Promise<UrlClassification> {
+    try {
+      if (this.env.GEMINI_API_KEY) {
+        return await this.gemini.classifyUrlContent(title, content);
+      }
+    } catch (err) {
+      console.warn("Gemini classifyUrlContent failed, falling back to Workers AI:", err);
+    }
+    return await this.workersAi.classifyUrlContent(title, content);
+  }
 }
 
 export function getLLMProvider(env: Env): LLMProvider {
-  // Stub for Phase 1 - will be implemented in Phase 4
-  throw new Error(`LLMProvider not implemented yet for provider ${env.LLM_PROVIDER} - scheduled for Phase 4`);
+  const provider = (env.LLM_PROVIDER as string) || "gemini";
+  if (provider === "cloudflare") {
+    return new WorkersAIProvider(env);
+  }
+  return new FallbackLLMProvider(env);
 }
+
+export * from "./schemas";
+export type { LLMProvider } from "./schemas";
+

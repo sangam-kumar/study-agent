@@ -8,6 +8,7 @@ import {
   ReminderRow,
   WorkoutLogRow,
 } from "./db/schema";
+import { getLLMProvider } from "./ai/provider";
 
 export class StudyAgent extends Agent<Env> {
   // Initialized once when the Durable Object wakes up
@@ -138,14 +139,45 @@ export class StudyAgent extends Agent<Env> {
     const telegram = new TelegramClient(this.env.TELEGRAM_BOT_TOKEN);
 
     try {
+      const llm = getLLMProvider(this.env);
+
       if (message.voice) {
-        // Voice memo
+        // Voice memo: in-memory download & zero-storage processing
         const fileId = message.voice.file_id;
-        this.logInteraction("telegram_voice", `voice_file_id:${fileId}`);
-        await telegram.sendMessage(
-          chatId,
-          "🎤 <b>Voice memo saved to SQLite log!</b>\n<i>(Audio transcription & AI parsing coming in Phase 4)</i>"
-        );
+        console.log(`Processing voice memo [${fileId}]...`);
+
+        const audioBuffer = await telegram.downloadFileAsBuffer(fileId);
+        const result = await llm.processAudio(audioBuffer, message.voice.mime_type || "audio/ogg");
+
+        // 1. Log to SQLite interaction_logs
+        this.logInteraction("telegram_voice", result.transcript, result);
+
+        // 2. Dispatch based on extracted intent
+        if (result.intent === "workout_log" && result.workout) {
+          const today = new Date().toISOString().slice(0, 10);
+          this.sql`INSERT INTO workout_logs (date, workout_type, exercises_json, notes)
+                   VALUES (${today}, ${result.workout.workout_type}, ${JSON.stringify(result.workout.exercises)}, ${result.workout.notes ?? null})`;
+
+          const exercisesList = result.workout.exercises
+            .map((e) => `• <b>${e.name}</b>: ${e.sets}x${e.reps}${e.weight_kg ? ` @ ${e.weight_kg}kg` : ""}`)
+            .join("\n");
+
+          await telegram.sendMessage(
+            chatId,
+            `🏋️ <b>Workout Logged (${result.workout.workout_type})</b>\n\n${exercisesList}${result.workout.notes ? `\n\n<i>Note: ${result.workout.notes}</i>` : ""}\n\n<i>Transcript: "${result.transcript}"</i>`
+          );
+        } else if (result.intent === "study_note" && result.note) {
+          const takeaways = result.note.key_takeaways.map((t) => `• ${t}`).join("\n");
+          await telegram.sendMessage(
+            chatId,
+            `🧠 <b>Study Note Captured: ${result.note.topic}</b>\n\n${result.note.summary}\n\n<b>Key Takeaways:</b>\n${takeaways}\n\n<i>Transcript: "${result.transcript}"</i>`
+          );
+        } else {
+          await telegram.sendMessage(
+            chatId,
+            `🎙️ <b>Transcribed Voice Note:</b>\n\n<i>"${result.transcript}"</i>`
+          );
+        }
       } else if (message.text) {
         const text = (message.text as string).trim();
 
@@ -162,18 +194,48 @@ export class StudyAgent extends Agent<Env> {
             `🔗 <b>URL added to Reading Queue!</b>\n<code>${text}</code>\nTotal queued articles: <b>${count}</b>`
           );
         } else {
-          // General text note
-          this.logInteraction("telegram_text", text);
-          const stats = this.getStats();
-          await telegram.sendMessage(
-            chatId,
-            `📝 <b>Logged in SQLite!</b> (Total interactions: <b>${stats.totalLogs}</b>)\n<i>(LLM structured extraction coming in Phase 4)</i>`
-          );
+          // Natural language text: analyze via LLM
+          const parsed = await llm.parseText(text);
+          this.logInteraction("telegram_text", text, parsed);
+
+          if (parsed.intent === "workout_log" && parsed.workout) {
+            const today = new Date().toISOString().slice(0, 10);
+            this.sql`INSERT INTO workout_logs (date, workout_type, exercises_json, notes)
+                     VALUES (${today}, ${parsed.workout.workout_type}, ${JSON.stringify(parsed.workout.exercises)}, ${parsed.workout.notes ?? null})`;
+
+            const exercisesList = parsed.workout.exercises
+              .map((e) => `• <b>${e.name}</b>: ${e.sets}x${e.reps}${e.weight_kg ? ` @ ${e.weight_kg}kg` : ""}`)
+              .join("\n");
+
+            await telegram.sendMessage(
+              chatId,
+              `🏋️ <b>Workout Logged (${parsed.workout.workout_type})</b>\n\n${exercisesList}${parsed.workout.notes ? `\n\n<i>Note: ${parsed.workout.notes}</i>` : ""}`
+            );
+          } else if (parsed.intent === "snooze" && parsed.snooze) {
+            const hours = parsed.snooze.duration_hours ?? 2;
+            const untilMs = this.setSnooze(hours, parsed.snooze.reason);
+            const untilDate = new Date(untilMs).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" });
+            await telegram.sendMessage(
+              chatId,
+              `😴 <b>Snooze Activated!</b> Ambient cues paused until <b>${untilDate} IST</b> (${hours}h).\n<i>Reason: ${parsed.snooze.reason}</i>`
+            );
+          } else if (parsed.intent === "study_note" && parsed.note) {
+            const takeaways = parsed.note.key_takeaways.map((t) => `• ${t}`).join("\n");
+            await telegram.sendMessage(
+              chatId,
+              `🧠 <b>Study Note Captured: ${parsed.note.topic}</b>\n\n${parsed.note.summary}\n\n<b>Key Takeaways:</b>\n${takeaways}`
+            );
+          } else {
+            await telegram.sendMessage(
+              chatId,
+              parsed.replyText ?? "📝 <b>Note logged in SQLite!</b>"
+            );
+          }
         }
       }
     } catch (err) {
       console.error("Error handling telegram update:", err);
-      await telegram.sendMessage(chatId, "⚠️ Error processing your request.");
+      await telegram.sendMessage(chatId, "⚠️ Error processing your request with AI pipeline.");
     }
   }
 
@@ -192,6 +254,8 @@ export class StudyAgent extends Agent<Env> {
         const helpMessage = [
           "🤖 <b>Study Agent Commands</b>",
           "",
+          "• <code>/remind &lt;minutes&gt; &lt;text&gt;</code> - Set a reminder (e.g. <code>/remind 5 Take a break</code>)",
+          "• <code>/reminders</code> - List upcoming pending reminders",
           "• <code>/status</code> - View SQLite database stats & snooze status",
           "• <code>/queue</code> - List pending reading queue items",
           "• <code>/snooze &lt;hours&gt;</code> - Pause ambient reminders for X hours",
@@ -254,6 +318,61 @@ export class StudyAgent extends Agent<Env> {
         break;
       }
 
+      case "/remind": {
+        const minutes = parseFloat(args[0] ?? "");
+        const reminderText = args.slice(1).join(" ").trim();
+
+        if (isNaN(minutes) || minutes <= 0 || !reminderText) {
+          await telegram.sendMessage(
+            chatId,
+            "⚠️ <b>Usage:</b> <code>/remind &lt;minutes&gt; &lt;message&gt;</code>\n\n<i>Example:</i> <code>/remind 5 Take a quick break</code>"
+          );
+          return;
+        }
+
+        const delaySeconds = Math.max(1, Math.round(minutes * 60));
+        const triggerAtMs = Date.now() + delaySeconds * 1000;
+
+        // 1. Insert into SQLite table
+        this.sql`INSERT INTO reminders (reminder_type, trigger_at, payload_json, status)
+                 VALUES ('adhoc', ${triggerAtMs}, ${JSON.stringify({ text: reminderText })}, 'pending')`;
+        const reminderId = this.sql<{ id: number }>`SELECT last_insert_rowid() as id`[0]?.id;
+
+        // 2. Schedule via Agents SDK
+        await this.schedule(delaySeconds, "triggerReminder", JSON.stringify({ reminderId, text: reminderText }));
+
+        // 3. Confirm to user
+        const triggerTimeStr = new Date(triggerAtMs).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" });
+        await telegram.sendMessage(
+          chatId,
+          `⏰ <b>Reminder scheduled!</b>\n\n• <b>Message:</b> "${reminderText}"\n• <b>Fires at:</b> ${triggerTimeStr} IST (${minutes} min)`
+        );
+        break;
+      }
+
+      case "/reminders": {
+        const pending = this.sql<ReminderRow>`SELECT id, reminder_type, trigger_at, payload_json, status, created_at 
+                                              FROM reminders WHERE status = 'pending' ORDER BY trigger_at ASC LIMIT 5`;
+        if (pending.length === 0) {
+          await telegram.sendMessage(chatId, "📭 No pending reminders.");
+          return;
+        }
+
+        const lines = pending.map((r, i) => {
+          const timeStr = new Date(r.trigger_at).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" });
+          let note = "Reminder";
+          try {
+            if (r.payload_json) {
+              const parsed = JSON.parse(r.payload_json);
+              note = parsed.text ?? note;
+            }
+          } catch {}
+          return `${i + 1}. [${timeStr} IST] <i>${note}</i>`;
+        });
+        await telegram.sendMessage(chatId, `⏰ <b>Upcoming Reminders:</b>\n\n${lines.join("\n")}`);
+        break;
+      }
+
       case "/recent": {
         const logs = this.getRecentLogs(3);
         if (logs.length === 0) {
@@ -270,6 +389,30 @@ export class StudyAgent extends Agent<Env> {
         await telegram.sendMessage(chatId, `❓ Unknown command <code>${command}</code>. Type <code>/help</code> for available commands.`);
         break;
       }
+    }
+  }
+
+  /**
+   * Invoked by Agents SDK scheduler when a reminder alarm fires.
+   */
+  async triggerReminder(payloadStr: string): Promise<void> {
+    try {
+      const payload = JSON.parse(payloadStr) as { reminderId?: number; text: string };
+      const telegram = new TelegramClient(this.env.TELEGRAM_BOT_TOKEN);
+      const chatId = this.env.USER_TELEGRAM_CHAT_ID;
+
+      if (payload.reminderId) {
+        this.sql`UPDATE reminders SET status = 'dispatched' WHERE id = ${payload.reminderId}`;
+      }
+
+      if (chatId) {
+        await telegram.sendMessage(
+          chatId,
+          `⏰ <b>Reminder:</b>\n\n${payload.text}`
+        );
+      }
+    } catch (err) {
+      console.error("Error triggering reminder:", err);
     }
   }
 }

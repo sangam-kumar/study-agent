@@ -8,6 +8,8 @@ declare global {
     TELEGRAM_SECRET_TOKEN: string;
     USER_TELEGRAM_CHAT_ID: string;
     GITHUB_PAT: string;
+    /** Bearer token for /admin/* routes. Unset = admin routes disabled. */
+    ADMIN_TOKEN?: string;
   }
 }
 

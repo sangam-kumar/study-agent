@@ -13,3 +13,6 @@ USER_TELEGRAM_CHAT_ID=        # your numeric Telegram user/chat ID
 
 # GitHub Fine-grained PAT — scoped to study-repo, Contents: read+write only
 GITHUB_PAT=
+
+# Bearer token for POST /admin/seed. Any long random string. Unset = admin routes disabled.
+ADMIN_TOKEN=

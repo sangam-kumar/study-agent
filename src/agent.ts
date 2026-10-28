@@ -1,7 +1,6 @@
 import { Agent } from "agents";
 import { TelegramClient } from "./telegram/bot";
 import {
-  SCHEMA_SQL,
   BotStateRow,
   InteractionLogRow,
   ReadingQueueRow,
@@ -9,8 +8,22 @@ import {
   WorkoutLogRow,
 } from "./db/schema";
 import { getLLMProvider } from "./ai/provider";
+import { doDb } from "./db/db.ts";
+import { runMigrations } from "./db/migrations.ts";
+import { applyOp, undoLast } from "./ops.ts";
+import type { ApplyOptions, ApplyResult, UndoResult } from "./ops.ts";
+import { SerialQueue } from "./queue.ts";
+import { SeedError, loadStudySeed, queryPlan } from "./seed.ts";
+import { ResetError, parseScopes, resetData as resetRows } from "./reset.ts";
+import type { SeedReport } from "./seed.ts";
+
+/** Processed-update rows older than this are pruned; replays beyond it are not a concern. */
+const PROCESSED_UPDATE_TTL_MS = 7 * 24 * 3600 * 1000;
 
 export class StudyAgent extends Agent<Env> {
+  // One message at a time: an await on the LLM must not let a second message read stale state.
+  private readonly messageQueue = new SerialQueue();
+
   // Initialized once when the Durable Object wakes up
   override async onStart(): Promise<void> {
     this.initDatabase();
@@ -37,8 +50,63 @@ export class StudyAgent extends Agent<Env> {
    * Run idempotent SQLite migrations/DDL.
    */
   private initDatabase(): void {
-    // Durable Object embedded SQLite execution
-    this.ctx.storage.sql.exec(SCHEMA_SQL);
+    // v1 tables (SCHEMA_SQL) are migration 1; the product-loop tables are migration 2.
+    const applied = runMigrations(doDb(this.ctx));
+    if (applied.length > 0) console.log(`Applied DB migrations: ${applied.join(", ")}`);
+  }
+
+  // --- Plan state changes (all go through ops.ts) ---
+
+  applyPlanOp(op: unknown, opts: ApplyOptions = {}): ApplyResult {
+    return applyOp(doDb(this.ctx), op, opts);
+  }
+
+  undoLastOp(): UndoResult {
+    return undoLast(doDb(this.ctx), { source: "telegram" });
+  }
+
+  // --- Clearing test data (called by POST /admin/reset) ---
+
+  /**
+   * Dry run unless confirm is true. Clearing `reminders` also cancels the matching delayed
+   * alarms, otherwise a deleted row would still fire its message. The three daily cue
+   * schedules are never touched.
+   */
+  async resetData(
+    scope: string,
+    confirm: boolean,
+  ): Promise<{ ok: true; dryRun: boolean; affected: Record<string, number>; alarms?: number } | { ok: false; error: string }> {
+    try {
+      const scopes = parseScopes(scope);
+      const dryRun = !confirm;
+      const affected = resetRows(doDb(this.ctx), scopes, dryRun);
+
+      let alarms: number | undefined;
+      if (scopes.includes("reminders")) {
+        const pending = (await this.listSchedules({ type: "delayed" })).filter((s) => s.callback === "triggerReminder");
+        alarms = pending.length;
+        if (!dryRun) for (const s of pending) await this.cancelSchedule(s.id);
+      }
+      return { ok: true, dryRun, affected, ...(alarms === undefined ? {} : { alarms }) };
+    } catch (err) {
+      if (err instanceof ResetError) return { ok: false, error: err.message };
+      console.error("Reset failed:", err);
+      return { ok: false, error: "reset failed (see worker logs)" };
+    }
+  }
+
+  // --- Seeding (called by POST /admin/seed) ---
+
+  /** Returns a result object rather than throwing: errors do not cross the RPC boundary reliably. */
+  loadSeed(kind: string, body: unknown): { ok: true; report: SeedReport } | { ok: false; error: string } {
+    try {
+      if (kind !== "study") return { ok: false, error: `unknown seed kind: ${kind} (supported: study)` };
+      return { ok: true, report: loadStudySeed(doDb(this.ctx), body) };
+    } catch (err) {
+      if (err instanceof SeedError) return { ok: false, error: err.message };
+      console.error("Seed load failed:", err);
+      return { ok: false, error: "seed load failed (see worker logs)" };
+    }
   }
 
   // --- State Key-Value Helpers ---
@@ -134,7 +202,34 @@ export class StudyAgent extends Agent<Env> {
 
   // --- Telegram Update Handler ---
 
+  /**
+   * Entry point from the Worker. Serialises processing and skips updates we have already
+   * handled (Telegram redelivery, manual webhook replay).
+   */
   async handleTelegramUpdate(update: any): Promise<void> {
+    return this.messageQueue.run(async () => {
+      const updateId: number | undefined = typeof update?.update_id === "number" ? update.update_id : undefined;
+      const db = doDb(this.ctx);
+
+      if (updateId !== undefined) {
+        const seen = db.all<{ update_id: number }>("SELECT update_id FROM processed_update WHERE update_id = ?", updateId);
+        if (seen.length > 0) {
+          console.log(`Skipping already-processed update ${updateId}`);
+          return;
+        }
+      }
+
+      await this.processTelegramUpdate(update);
+
+      if (updateId !== undefined) {
+        const now = Date.now();
+        db.run("INSERT OR IGNORE INTO processed_update (update_id, ts) VALUES (?, ?)", updateId, new Date(now).toISOString());
+        db.run("DELETE FROM processed_update WHERE ts < ?", new Date(now - PROCESSED_UPDATE_TTL_MS).toISOString());
+      }
+    });
+  }
+
+  private async processTelegramUpdate(update: any): Promise<void> {
     console.log("StudyAgent received Telegram update:", JSON.stringify(update));
 
     const message = update.message;
@@ -294,10 +389,34 @@ export class StudyAgent extends Agent<Env> {
           "• <code>/snooze &lt;hours&gt;</code> - Pause ambient reminders for X hours",
           "• <code>/unsnooze</code> - Resume ambient reminders immediately",
           "• <code>/recent</code> - Show last 3 logged interactions",
+          "• <code>/undo</code> - Undo the last plan change",
+          "• <code>/tracks</code> - Show where each study track pointer is",
           "",
           "💡 <i>Tip: Send any URL to queue it, or send text/voice to log thoughts & workouts!</i>",
         ].join("\n");
         await telegram.sendMessage(chatId, helpMessage);
+        break;
+      }
+
+      case "/tracks": {
+        const plan = queryPlan(doDb(this.ctx));
+        if (plan.length === 0) {
+          await telegram.sendMessage(chatId, "No study tracks loaded yet. Seed them with POST /admin/seed.");
+          break;
+        }
+        const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        const lines = plan.map((p) => {
+          const where = p.finished ? "✅ finished" : p.next ? `next: ${esc(p.next.title)}${p.next.group ? ` <i>(${esc(p.next.group)})</i>` : ""}` : "empty";
+          const pos = p.total > 0 ? `${Math.min(p.ordinal, p.total)}/${p.total}` : "0/0";
+          return `• <b>${esc(p.trackTitle)} — ${esc(p.listTitle)}</b> [${pos}]\n  ${where}`;
+        });
+        await telegram.sendMessage(chatId, `📚 <b>Study tracks</b>\n\n${lines.join("\n")}`);
+        break;
+      }
+
+      case "/undo": {
+        const result = this.undoLastOp();
+        await telegram.sendMessage(chatId, result.undone ? `↩️ ${result.summary}` : result.summary);
         break;
       }
 

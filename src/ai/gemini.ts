@@ -7,6 +7,7 @@ import {
   AUDIO_PARSE_JSON_SCHEMA,
   URL_CLASSIFICATION_JSON_SCHEMA,
 } from "./schemas";
+import { istNowLabel } from "../reminder-time.ts";
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   let binary = "";
@@ -71,8 +72,10 @@ Analyze the following user input and determine whether it is:
 1. "workout_log": A workout record (exercises, sets, reps, weight in kg, notes).
 2. "study_note": Study notes, summaries, or thoughts on a topic.
 3. "snooze": A request to snooze, pause notifications, skip study blocks, or reschedule.
-4. "reminder": A request to set a reminder, alarm, or task alert at some future time or delay (e.g., "remind me in 30 minutes to drink water", "remind me in 2 hours to call mom", "set a reminder for 15 mins to check email"). Extract reminder_text and calculate delay_minutes (in minutes from now).
+4. "reminder": A request to set a reminder, alarm, or task alert at some future time or delay (e.g., "remind me in 30 minutes to drink water", "remind me in 2 hours to call mom", "set a reminder for 15 mins to check email"). For "in N minutes/hours" set delay_minutes. For a clock time like "at 6:30 pm" set at_time as 24h HH:MM (18:30) in IST and delay_minutes 0; set on_date only if a day was named. Never convert a clock time into minutes yourself.
 5. "general": General conversation or query.
+
+The current time is ${istNowLabel(Date.now())}. All times the user mentions are IST.
 
 Extract all relevant fields strictly into the schema. For replyText, provide a concise, friendly confirmation.
 
@@ -87,10 +90,10 @@ ${text}`;
     // In-memory base64 encoding (zero disk storage)
     const base64Audio = arrayBufferToBase64(audioBuffer);
 
-    const prompt = `You are an intelligent assistant processing an audio voice memo.
+    const prompt = `You are an intelligent assistant processing an audio voice memo. The current time is ${istNowLabel(Date.now())}. All times the user mentions are IST.
 1. Transcribe the audio verbatim.
 2. Determine if the speech represents a workout_log, a study_note, a reminder, or general thoughts.
-3. If it is a reminder (e.g. "remind me in 15 minutes to call mom"), extract the reminder_text and delay_minutes (in minutes).
+3. If it is a reminder (e.g. "remind me in 15 minutes to call mom"), extract the reminder_text. For a relative delay set delay_minutes; for a clock time ("at 6:30 pm") set at_time as 24h HH:MM in IST (and on_date if a day was named) with delay_minutes 0.
 4. If it is a workout, extract the exercises, sets, reps, and weights.
 5. If it is a study note or thought, extract the topic, summary, and key takeaways.
 Output strictly following the JSON schema.`;

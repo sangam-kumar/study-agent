@@ -16,6 +16,8 @@ import { SerialQueue } from "./queue.ts";
 import { SeedError, loadStudySeed, queryPlan } from "./seed.ts";
 import { ResetError, parseScopes, resetData as resetRows } from "./reset.ts";
 import type { SeedReport } from "./seed.ts";
+import { ReminderTimeError, resolveDelayMinutes } from "./reminder-time.ts";
+import type { ReminderExtraction } from "./ai/schemas";
 
 /** Processed-update rows older than this are pruned; replays beyond it are not a concern. */
 const PROCESSED_UPDATE_TTL_MS = 7 * 24 * 3600 * 1000;
@@ -278,10 +280,7 @@ export class StudyAgent extends Agent<Env> {
             `🏋️ <b>Workout Logged (${result.workout.workout_type})</b>\n\n${exercisesList}${result.workout.notes ? `\n\n<i>Note: ${result.workout.notes}</i>` : ""}\n\n<i>Transcript: "${result.transcript}"</i>`
           );
         } else if (result.intent === "reminder" && result.reminder) {
-          const confirmMsg = await this.scheduleAdhocReminder(
-            result.reminder.delay_minutes,
-            result.reminder.reminder_text
-          );
+          const confirmMsg = await this.scheduleExtractedReminder(result.reminder);
           await telegram.sendMessage(
             chatId,
             `${confirmMsg}\n\n<i>Transcript: "${result.transcript}"</i>`
@@ -340,10 +339,7 @@ export class StudyAgent extends Agent<Env> {
               `😴 <b>Snooze Activated!</b> Ambient cues paused until <b>${untilDate} IST</b> (${hours}h).\n<i>Reason: ${parsed.snooze.reason}</i>`
             );
           } else if (parsed.intent === "reminder" && parsed.reminder) {
-            const confirmMsg = await this.scheduleAdhocReminder(
-              parsed.reminder.delay_minutes,
-              parsed.reminder.reminder_text
-            );
+            const confirmMsg = await this.scheduleExtractedReminder(parsed.reminder);
             await telegram.sendMessage(chatId, confirmMsg);
           } else if (parsed.intent === "study_note" && parsed.note) {
             const takeaways = parsed.note.key_takeaways.map((t) => `• ${t}`).join("\n");
@@ -719,6 +715,18 @@ export class StudyAgent extends Agent<Env> {
    * Schedule an ad-hoc reminder via Agents SDK alarm scheduler and insert into SQLite.
    * Returns a formatted confirmation string.
    */
+  /** Resolves the LLM's extraction (relative delay or clock time) in code, then schedules. */
+  async scheduleExtractedReminder(r: ReminderExtraction): Promise<string> {
+    try {
+      return await this.scheduleAdhocReminder(resolveDelayMinutes(r, Date.now()), r.reminder_text);
+    } catch (err) {
+      if (err instanceof ReminderTimeError) {
+        return `⚠️ Couldn't schedule "${r.reminder_text}": ${err.message}. Try <code>/remind &lt;minutes&gt; &lt;text&gt;</code>.`;
+      }
+      throw err;
+    }
+  }
+
   async scheduleAdhocReminder(minutes: number, reminderText: string): Promise<string> {
     const validMinutes = isNaN(minutes) || minutes <= 0 ? 5 : minutes;
     const delaySeconds = Math.max(1, Math.round(validMinutes * 60));

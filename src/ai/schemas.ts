@@ -25,7 +25,12 @@ export interface StudyNoteExtraction {
 
 export interface ReminderExtraction {
   reminder_text: string;
+  /** Relative requests only ("in 30 minutes"); 0 when a clock time was given. */
   delay_minutes: number;
+  /** 24h "HH:MM" IST for clock-time requests ("at 6:30 pm"); empty otherwise. */
+  at_time?: string;
+  /** "YYYY-MM-DD" when the user named a day; empty otherwise. */
+  on_date?: string;
 }
 
 export interface TextParseResult {
@@ -100,7 +105,9 @@ export const TEXT_PARSE_JSON_SCHEMA = {
       type: "object",
       properties: {
         reminder_text: { type: "string", description: "The content/task to be reminded of" },
-        delay_minutes: { type: "number", description: "Estimated delay in minutes from now when the reminder should fire" },
+        delay_minutes: { type: "number", description: "Only for relative requests like 'in 30 minutes'. Use 0 when a clock time was given." },
+        at_time: { type: "string", description: "24h HH:MM in IST when the user gave a clock time like 'at 6:30 pm' (18:30). Empty string otherwise." },
+        on_date: { type: "string", description: "YYYY-MM-DD in IST when the user named a day (today, tomorrow, Monday). Empty string if no day was named." },
       },
       required: ["reminder_text", "delay_minutes"],
     },
@@ -157,7 +164,9 @@ export const AUDIO_PARSE_JSON_SCHEMA = {
       type: "object",
       properties: {
         reminder_text: { type: "string", description: "The content/task to be reminded of" },
-        delay_minutes: { type: "number", description: "Estimated delay in minutes from now when the reminder should fire" },
+        delay_minutes: { type: "number", description: "Only for relative requests like 'in 30 minutes'. Use 0 when a clock time was given." },
+        at_time: { type: "string", description: "24h HH:MM in IST when the user gave a clock time like 'at 6:30 pm' (18:30). Empty string otherwise." },
+        on_date: { type: "string", description: "YYYY-MM-DD in IST when the user named a day (today, tomorrow, Monday). Empty string if no day was named." },
       },
       required: ["reminder_text", "delay_minutes"],
     },

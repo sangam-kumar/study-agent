@@ -66,12 +66,13 @@ For local dev add `ADMIN_TOKEN=...` to `.dev.vars`, or run `wrangler dev --var A
 
 ```powershell
 curl.exe -X POST "https://<worker>/admin/seed?kind=config"  -H "Authorization: Bearer $token" -H "Content-Type: application/json" --data-binary "@C:\study\study-repo\seed\config.json"
-curl.exe -X POST "https://<worker>/admin/seed?kind=reading" -H "Authorization: Bearer $token" -H "Content-Type: application/json" --data-binary "@C:\study\study-repo\seedeading.json"
+curl.exe -X POST "https://<worker>/admin/seed?kind=reading" -H "Authorization: Bearer $token" -H "Content-Type: application/json" --data-binary "@C:\study\study-repo\seed
+eading.json"
 ```
 
-Expected first responses: config `{pattern:{inserted:7}, rotation:{inserted:3}, config:{inserted:10}, lanes:{inserted:4}, targets:{inserted:5}}`; reading `{items:{inserted:453}}`. Second runs insert nothing.
+Expected first responses: config `{pattern:{inserted:7}, rotation:{inserted:3}, config:{inserted:10}, lanes:{inserted:4}, targets:{inserted:5}}`; reading `{items:{inserted:460}}`. Second runs insert nothing.
 
-Ownership on reload: `config`, `lane`, `target` are the user's (set through ops), so a reload only fills in what is missing. `pattern` and `rotation` are seed-owned and are upserted. `reading_item.state` is the user's and is never touched; only metadata refreshes. Not set yet: the weekly **study sessions** target, which waits on the study rhythm decision (reform plan W3).
+Ownership on reload: `config`, `lane`, `target` are the user's (set through ops), so a reload only fills in what is missing. `pattern` and `rotation` are seed-owned and are upserted. `reading_item.state`, `slot` and `shortlist` are the user's and are never touched; only metadata refreshes. Not set yet: the weekly **study sessions** target, which waits on the study rhythm decision (reform plan W3).
 
 ## 5. Sub-steps
 
@@ -103,6 +104,7 @@ Migrations only add tables, and seeding never touches the v1 tables, so anything
 | `snooze` | the snooze keys in `bot_state` |
 | `plan` | `revision`, `event`, `inbox`, `plan_item`, `day_plan`, `override`, `note` |
 | `pointers` | every pointer back to unit 1 (units are kept) |
+| `shelf` | reading books back to their seeded state (queued/backlog); books you added by hand are removed |
 | `all` | everything above |
 
 Never touched: the schema, seeded tracks/units, `config`, `lane`, `target`, other `bot_state` keys, and the three daily cue schedules.
@@ -117,3 +119,18 @@ curl.exe -X POST "https://<worker>/admin/reset?scope=logs,reminders,snooze,plan,
 Response: `{"ok":true,"dryRun":true,"affected":{"logs":42,...},"alarms":1}` — `alarms` appears when `reminders` is in scope. Deletion is permanent; there is no undo for a reset.
 
 Tested against an in-memory database (dry run deletes nothing; `all` keeps seed content and unrelated state; scopes are independent). **Not yet exercised in workerd:** cancelling the delayed alarms. After deploy: `/remind 60 test`, run the dry run (expect `"alarms":1`), run it with `confirm=yes`, then `/reminders` should be empty.
+
+## 8. The reading shelf
+
+`reading_item` flow: `backlog|queued -> sampling -> active -> done`, with `dropped` as an exit from any open state (revivable, with the reason kept). Each book has a `slot` (technical or narrative/founder); only **one sampling/active book per slot**.
+
+| Command | Op | Effect |
+|---|---|---|
+| `/books` | - | what is being read + up to 3 picks (next shortlisted book of each free slot, plus a wildcard that rotates by day) |
+| `/book add Title \| Author` | `add_reading` | lands in the backlog as your own entry |
+| `/book start <id>` | `start_reading` | begins sampling; refused if the slot is busy; also revives a dropped book |
+| `/book keep <id>` | `keep_reading` | sampling -> active |
+| `/book done <id>` | `finish_reading` | finished |
+| `/book drop <id> [reason]` | `drop_reading` | dropped, reason kept; never re-offered unless you start it again |
+
+Every change is an op, so `/undo` reverses it. The shortlist and its order live in `study-repo/scripts/seed_reading.py` (`SHORTLIST_*`). Natural-language ("drop Sapiens, boring") arrives with the inference layer in Phase 9; the sampling check-in prompt arrives with the day loop in Phase 10.

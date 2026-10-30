@@ -9,13 +9,14 @@
 //   snooze     bot_state snooze keys
 //   plan       revision, event, inbox, plan_item, day_plan, override, note
 //   pointers   every pointer back to unit 1         (units themselves are kept)
+//   shelf      reading_item states back to seeded (queued/backlog); hand-added books removed
 //
 // NOT touched by any scope: tables/migrations, track/unit_list/unit content, config, lane, target,
 // pattern, rotation, other bot_state keys.
 
 import type { Db } from "./db/db.ts";
 
-export const RESET_SCOPES = ["logs", "workouts", "reminders", "reading", "snooze", "plan", "pointers"] as const;
+export const RESET_SCOPES = ["logs", "workouts", "reminders", "reading", "snooze", "plan", "pointers", "shelf"] as const;
 export type ResetScope = (typeof RESET_SCOPES)[number];
 
 export class ResetError extends Error {
@@ -26,7 +27,7 @@ export class ResetError extends Error {
 }
 
 /** Child tables first so foreign keys never block a delete. */
-const TABLES: Record<Exclude<ResetScope, "snooze" | "pointers">, string[]> = {
+const TABLES: Record<Exclude<ResetScope, "snooze" | "pointers" | "shelf">, string[]> = {
   logs: ["interaction_logs", "processed_update"],
   workouts: ["workout_logs"],
   reminders: ["reminders"],
@@ -34,7 +35,10 @@ const TABLES: Record<Exclude<ResetScope, "snooze" | "pointers">, string[]> = {
   plan: ["revision", "event", "inbox", "plan_item", "day_plan", "override", "note"],
 };
 
-const SNOOZE_WHERE = "key IN ('snooze_until', 'snooze_reason')";
+/** Anything the user changed: moved out of its seeded state, or added by hand (no seed_key). */
+const SHELF_DIRTY = "seed_key IS NULL OR state <> CASE source WHEN 'queue' THEN 'queued' ELSE 'backlog' END";
+
+const SNOOZE_WHERE ="key IN ('snooze_until', 'snooze_reason')";
 
 export function parseScopes(input: string | string[]): ResetScope[] {
   const raw = (Array.isArray(input) ? input : input.split(",")).map((s) => s.trim()).filter(Boolean);
@@ -52,6 +56,7 @@ function countRows(db: Db, scope: ResetScope): number {
   const c = (sql: string) => db.all<{ c: number }>(sql)[0].c;
   if (scope === "snooze") return c(`SELECT COUNT(*) AS c FROM bot_state WHERE ${SNOOZE_WHERE}`);
   if (scope === "pointers") return c("SELECT COUNT(*) AS c FROM pointer WHERE ordinal <> 1");
+  if (scope === "shelf") return c(`SELECT COUNT(*) AS c FROM reading_item WHERE ${SHELF_DIRTY}`);
   return TABLES[scope].reduce((n, t) => n + c(`SELECT COUNT(*) AS c FROM ${t}`), 0);
 }
 
@@ -67,6 +72,13 @@ export function resetData(db: Db, scopes: ResetScope[], dryRun: boolean): Record
       if (dryRun) continue;
       if (scope === "snooze") db.run(`DELETE FROM bot_state WHERE ${SNOOZE_WHERE}`);
       else if (scope === "pointers") db.run("UPDATE pointer SET ordinal = 1 WHERE ordinal <> 1");
+      else if (scope === "shelf") {
+        db.run("DELETE FROM reading_item WHERE seed_key IS NULL");
+        db.run(
+          `UPDATE reading_item SET state = CASE source WHEN 'queue' THEN 'queued' ELSE 'backlog' END,
+                  started_at = NULL, ended_at = NULL, drop_reason = NULL WHERE ${SHELF_DIRTY}`,
+        );
+      }
       else for (const t of TABLES[scope]) db.run(`DELETE FROM ${t}`);
     }
   };

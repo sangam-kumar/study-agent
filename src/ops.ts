@@ -14,6 +14,8 @@ export const LANES = ["fitness", "study", "reading", "career", "guitar"] as cons
 export const OVERRIDE_TYPES = ["TRAVEL", "SICK", "OUT", "LOW_MOOD"] as const;
 export const ITEM_STATUSES = ["planned", "done", "skipped", "dropped"] as const;
 export const ITEM_SOURCES = ["pattern", "pointer", "user", "minimum"] as const;
+export const READING_SLOTS = ["technical", "narrative"] as const;
+export type ReadingSlot = (typeof READING_SLOTS)[number];
 const MAX_NOTE_TTL_DAYS = 30;
 
 export type Lane = (typeof LANES)[number];
@@ -31,6 +33,11 @@ export type Op =
   | { type: "resolve_note"; note_id: number }
   | { type: "advance_pointer"; list_id: string; to_ordinal?: number }
   | { type: "set_config"; key: string; value: string }
+  | { type: "add_reading"; title: string; author?: string; kind?: string; url?: string; note?: string; slot?: ReadingSlot; shortlist?: boolean }
+  | { type: "start_reading"; reading_id: number }
+  | { type: "keep_reading"; reading_id: number }
+  | { type: "finish_reading"; reading_id: number }
+  | { type: "drop_reading"; reading_id: number; reason?: string }
   | { type: "note"; text: string };
 
 export class OpError extends Error {
@@ -145,6 +152,23 @@ export function validateOp(input: unknown): Op {
       return { type: "advance_pointer", list_id: str(o, "list_id", 100), to_ordinal: optInt(o, "to_ordinal", 1) };
     case "set_config":
       return { type: "set_config", key: str(o, "key", 100), value: str(o, "value", 500) };
+    case "add_reading":
+      return {
+        type: "add_reading",
+        title: str(o, "title", 300),
+        author: optStr(o, "author", 200),
+        kind: optStr(o, "kind", 30),
+        url: optStr(o, "url", 1000),
+        note: optStr(o, "note", 500),
+        slot: o.slot === undefined || o.slot === null ? undefined : oneOf(o, "slot", READING_SLOTS),
+        shortlist: o.shortlist === true,
+      };
+    case "start_reading":
+    case "keep_reading":
+    case "finish_reading":
+      return { type: o.type, reading_id: int(o, "reading_id", 1) };
+    case "drop_reading":
+      return { type: "drop_reading", reading_id: int(o, "reading_id", 1), reason: optStr(o, "reason", 300) };
     case "note":
       return { type: "note", text: str(o, "text", 1000) };
     default:
@@ -234,6 +258,12 @@ function requireItem(h: HandlerCtx, id: number): Row {
   const item = h.rec.get("plan_item", id);
   if (!item) throw new OpError(`plan item ${id} not found`);
   return item;
+}
+
+function requireReading(h: HandlerCtx, id: number): Row {
+  const r = h.rec.get("reading_item", id);
+  if (!r) throw new OpError(`reading item ${id} not found`);
+  return r;
 }
 
 const HANDLERS: { [K in Op["type"]]: (h: HandlerCtx, op: Extract<Op, { type: K }>) => HandlerResult } = {
@@ -327,6 +357,57 @@ const HANDLERS: { [K in Op["type"]]: (h: HandlerCtx, op: Extract<Op, { type: K }
     if (cur) h.rec.update("config", op.key, { value: op.value }, "key");
     else h.rec.insert("config", { key: op.key, value: op.value }, "key");
     return { refId: op.key, summary: `${op.key} = ${op.value}` };
+  },
+
+  add_reading(h, op) {
+    const dup = h.db.all("SELECT 1 FROM reading_item WHERE lower(title) = lower(?) AND state NOT IN ('done','dropped')", op.title);
+    if (dup.length > 0) throw new OpError(`"${op.title}" is already on the shelf`);
+    const id = h.rec.insert("reading_item", {
+      title: op.title,
+      author: op.author ?? null,
+      kind: op.kind ?? "book",
+      url: op.url ?? null,
+      note: op.note ?? null,
+      source: "user",
+      state: "backlog",
+      slot: op.slot ?? null,
+      shortlist: op.shortlist ? 1 : 0,
+    });
+    return { lane: "reading", refId: id, summary: `Added to the shelf: ${op.title}` };
+  },
+
+  start_reading(h, op) {
+    const r = requireReading(h, op.reading_id);
+    if (!["backlog", "queued", "dropped"].includes(r.state as string)) throw new OpError(`${r.title} is already ${r.state}`);
+    if (r.slot) {
+      const busy = h.db.all<{ title: string }>(
+        "SELECT title FROM reading_item WHERE slot = ? AND state IN ('sampling','active') AND id <> ?", r.slot, op.reading_id,
+      )[0];
+      if (busy) throw new OpError(`one ${r.slot} book at a time: finish or drop "${busy.title}" first`);
+    }
+    h.rec.update("reading_item", op.reading_id, { state: "sampling", started_at: iso(h.now), ended_at: null, drop_reason: null });
+    return { lane: "reading", refId: op.reading_id, summary: `Sampling: ${r.title}` };
+  },
+
+  keep_reading(h, op) {
+    const r = requireReading(h, op.reading_id);
+    if (r.state !== "sampling") throw new OpError(`${r.title} is ${r.state}, not sampling`);
+    h.rec.update("reading_item", op.reading_id, { state: "active" });
+    return { lane: "reading", refId: op.reading_id, summary: `Keeping: ${r.title}` };
+  },
+
+  finish_reading(h, op) {
+    const r = requireReading(h, op.reading_id);
+    if (r.state !== "sampling" && r.state !== "active") throw new OpError(`${r.title} is ${r.state}, not being read`);
+    h.rec.update("reading_item", op.reading_id, { state: "done", ended_at: iso(h.now) });
+    return { lane: "reading", refId: op.reading_id, summary: `Finished: ${r.title}` };
+  },
+
+  drop_reading(h, op) {
+    const r = requireReading(h, op.reading_id);
+    if (r.state === "done" || r.state === "dropped") throw new OpError(`${r.title} is already ${r.state}`);
+    h.rec.update("reading_item", op.reading_id, { state: "dropped", ended_at: iso(h.now), drop_reason: op.reason ?? null });
+    return { lane: "reading", refId: op.reading_id, summary: `Dropped: ${r.title}${op.reason ? ` (${op.reason})` : ""}` };
   },
 
   note(_h, op) {

@@ -163,7 +163,9 @@ CREATE INDEX IF NOT EXISTS idx_plan_item_date ON plan_item(date);
 `;
 
 // Things read or watched for their own sake. Separate from the v1 reading_queue (URL-only, shared via Telegram).
-// state is the user's; seed reloads refresh metadata but never touch it.
+// state/slot/shortlist belong to the user: seed reloads refresh metadata but never touch them.
+// Flow: backlog|queued -> sampling -> active -> done, with dropped as an exit from any open state (revivable).
+// slot limits work in progress: at most one sampling/active item per slot.
 const V3_SQL = `
 CREATE TABLE IF NOT EXISTS reading_item (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -178,8 +180,13 @@ CREATE TABLE IF NOT EXISTS reading_item (
   url TEXT,
   note TEXT,
   source TEXT NOT NULL DEFAULT 'user' CHECK(source IN ('queue','library','user')),
-  state TEXT NOT NULL DEFAULT 'backlog' CHECK(state IN ('backlog','queued','active','done','dropped')),
-  ordinal INTEGER
+  state TEXT NOT NULL DEFAULT 'backlog' CHECK(state IN ('backlog','queued','sampling','active','done','dropped')),
+  slot TEXT CHECK(slot IN ('technical','narrative')),
+  shortlist INTEGER NOT NULL DEFAULT 0,
+  ordinal INTEGER,
+  started_at TEXT,
+  ended_at TEXT,
+  drop_reason TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_reading_item_state ON reading_item(state);
 `;

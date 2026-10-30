@@ -79,5 +79,5 @@ test("scope parsing is strict", () => {
   assert.deepEqual(parseScopes("snooze, logs"), ["logs", "snooze"]);
   assert.throws(() => parseScopes(""), ResetError);
   assert.throws(() => parseScopes("logs,everything"), ResetError);
-  assert.equal(parseScopes("all").length, 7);
+  assert.equal(parseScopes("all").length, 8);
 });

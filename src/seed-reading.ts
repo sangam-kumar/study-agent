@@ -1,13 +1,14 @@
 // Loads seed/reading.json into reading_item.
 //
-// Idempotent by seed_key. A reload refreshes metadata but NEVER touches `state`, because the user
-// moves items between backlog / queued / active / done. Nothing is deleted; items missing from the
+// Idempotent by seed_key. A reload refreshes metadata but NEVER touches `state`, `slot` or `shortlist`,
+// because the user moves items through backlog / sampling / active / done / dropped. Nothing is deleted; items missing from the
 // file are counted as orphans. One 'seed' event, no revision (not undoable).
 
 import type { Db } from "./db/db.ts";
 import { SeedError } from "./seed.ts";
 
-const SOURCES = ["queue", "library"] as const;
+const SOURCES = ["queue", "library", "user"] as const;
+const SLOTS = ["technical", "narrative"] as const;
 const STATES = ["backlog", "queued", "active", "done", "dropped"] as const;
 const MAX_ITEMS = 5000;
 
@@ -25,6 +26,9 @@ export interface ReadingSeedItem {
   source: (typeof SOURCES)[number];
   state: (typeof STATES)[number];
   ordinal: number | null;
+  /** Applied when the row is first inserted; afterwards they belong to the user. */
+  slot: (typeof SLOTS)[number] | null;
+  shortlist: boolean;
 }
 
 export interface ReadingSeedReport {
@@ -69,6 +73,8 @@ export function parseReadingSeed(input: unknown): ReadingSeedItem[] {
     if (ordinal !== undefined && ordinal !== null && (typeof ordinal !== "number" || !Number.isInteger(ordinal) || ordinal < 1)) {
       fail(`${p}.ordinal`, "expected an integer >= 1 or null");
     }
+    const slot = o.slot ?? null;
+    if (slot !== null && !(SLOTS as readonly unknown[]).includes(slot)) fail(`${p}.slot`, `expected one of ${SLOTS.join(", ")}`);
     return {
       key,
       title: str(o.title, `${p}.title`, 400),
@@ -83,6 +89,8 @@ export function parseReadingSeed(input: unknown): ReadingSeedItem[] {
       source: source as ReadingSeedItem["source"],
       state: state as ReadingSeedItem["state"],
       ordinal: (ordinal as number | null | undefined) ?? null,
+      slot: slot as ReadingSeedItem["slot"],
+      shortlist: o.shortlist === true,
     };
   });
 }
@@ -111,9 +119,10 @@ export function loadReadingSeed(db: Db, input: unknown, now: () => Date = () => 
       const row = db.all<Row>("SELECT * FROM reading_item WHERE seed_key = ?", it.key)[0];
       if (!row) {
         db.run(
-          `INSERT INTO reading_item (seed_key, title, kind, subtype, author, topic, priority, est_length, url, note, source, state, ordinal)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO reading_item (seed_key, title, kind, subtype, author, topic, priority, est_length, url, note, source, state, ordinal, slot, shortlist)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           it.key, it.title, it.kind, it.subtype, it.author, it.topic, it.priority, it.est_length, it.url, it.note, it.source, it.state, it.ordinal,
+          it.slot, it.shortlist ? 1 : 0,
         );
         report.items.inserted++;
       } else if (

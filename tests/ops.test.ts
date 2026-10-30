@@ -9,9 +9,9 @@ const day = "2026-10-27";
 
 test("migrations are idempotent and create the v2 tables", () => {
   const db = memoryDb();
-  assert.deepEqual(runMigrations(db), [1, 2]);
+  assert.deepEqual(runMigrations(db), [1, 2, 3]);
   assert.deepEqual(runMigrations(db), []);
-  for (const t of ["event", "revision", "day_plan", "plan_item", "unit", "pointer", "override", "note", "processed_update"]) {
+  for (const t of ["event", "revision", "day_plan", "plan_item", "unit", "pointer", "override", "note", "processed_update", "reading_item"]) {
     assert.equal(count(db, t), 0, t);
   }
 });

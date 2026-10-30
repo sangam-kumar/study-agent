@@ -177,8 +177,8 @@ flowchart TD
   - [x] 8.1: `/admin/seed` endpoint + loader (idempotent upsert by stable ids).
   - [~] 8.2: **Script written 2026-10-26** (`study-repo/scripts/seed_study.py` → `seed/study.json`; review of the JSON still pending, LLM split proposals not yet run). Study seed script — DSA from `study/problem-lists/dsa-sheet.md`; system design from `big-tech-prep-plan.md` + `system-design-curriculum.md`; frontier lab from `frontier-lab.md`. All pointers at unit 1. Prior `problems/` solutions attached as `ref` only. LLM may *propose* splits of oversized units into the JSON for review.
   - [x] 8.1b: `POST /admin/reset` — scoped, dry-run by default, cancels matching reminder alarms (added so v1 test data can be cleared; see `docs/phase-8-seed.md` §7).
-  - [ ] 8.3: Reading + config seed (`reading-queue.md` → items, library → `backlog`, targets incl. sleep 7/8, guitar lane `paused`).
-  - [ ] 8.4: Gym seed (pattern, rotation, exercise catalog, Oct sessions from `life/gym-tracking.md`; lane disabled).
+  - [x] 8.3: Reading + config seed (`reading-queue.md` → items, library → `backlog`, targets incl. sleep 7/8, guitar lane `paused`).
+  - [~] 8.4: Gym structure done in `seed/config.json` (pattern, rotation, targets). Exercise catalog + Oct sessions from `life/gym-tracking.md` deferred to Phase 13 (needs workout tables).
 * **Check:** loads into an empty DB; `query_plan` returns unit 1 for every track; no unit starts done.
 
 ### Phase 9: Inference interface, base card, lane cards, snapshot [W2]

@@ -62,12 +62,23 @@ Then in Telegram: `/tracks` → three lines, each `[1/N]` with its first unit.
 
 For local dev add `ADMIN_TOKEN=...` to `.dev.vars`, or run `wrangler dev --var ADMIN_TOKEN:<x>`. Note that `.dev.vars` also holds the real Telegram token, so a local server can message your chat.
 
+### Loading the other kinds
+
+```powershell
+curl.exe -X POST "https://<worker>/admin/seed?kind=config"  -H "Authorization: Bearer $token" -H "Content-Type: application/json" --data-binary "@C:\study\study-repo\seed\config.json"
+curl.exe -X POST "https://<worker>/admin/seed?kind=reading" -H "Authorization: Bearer $token" -H "Content-Type: application/json" --data-binary "@C:\study\study-repo\seedeading.json"
+```
+
+Expected first responses: config `{pattern:{inserted:7}, rotation:{inserted:3}, config:{inserted:10}, lanes:{inserted:4}, targets:{inserted:5}}`; reading `{items:{inserted:453}}`. Second runs insert nothing.
+
+Ownership on reload: `config`, `lane`, `target` are the user's (set through ops), so a reload only fills in what is missing. `pattern` and `rotation` are seed-owned and are upserted. `reading_item.state` is the user's and is never touched; only metadata refreshes. Not set yet: the weekly **study sessions** target, which waits on the study rhythm decision (reform plan W3).
+
 ## 5. Sub-steps
 
 - [x] 8.1: `/admin/seed` endpoint, auth, loader, `/tracks`.
 - [~] 8.2: Study seed script written (`study-repo/scripts/seed_study.py`); **review of `seed/study.json` pending**; LLM split proposals not built.
-- [ ] 8.3: Reading + config seed (`seed_reading.py`).
-- [ ] 8.4: Gym seed (`seed_gym.py`).
+- [x] 8.3: Reading seed (`study-repo/scripts/seed_reading.py` -> `seed/reading.json`, `kind=reading`, migration v3 `reading_item`) and config seed (hand-written `seed/config.json`, `kind=config`).
+- [x] 8.4: Gym *structure* (weekly pattern, rotation, targets, lanes) is in `seed/config.json`. **Not done, belongs to Phase 13:** the exercise catalog + backfilling the October sessions from `life/gym-tracking.md` (needs the workout tables), and the rotation pointer.
 
 ## 6. Validation
 

@@ -15,7 +15,8 @@ import type { ApplyOptions, ApplyResult, UndoResult } from "./ops.ts";
 import { SerialQueue } from "./queue.ts";
 import { SeedError, loadStudySeed, queryPlan } from "./seed.ts";
 import { ResetError, parseScopes, resetData as resetRows } from "./reset.ts";
-import type { SeedReport } from "./seed.ts";
+import { loadConfigSeed } from "./seed-config.ts";
+import { loadReadingSeed } from "./seed-reading.ts";
 import { ReminderTimeError, resolveDelayMinutes } from "./reminder-time.ts";
 import type { ReminderExtraction } from "./ai/schemas";
 
@@ -100,10 +101,13 @@ export class StudyAgent extends Agent<Env> {
   // --- Seeding (called by POST /admin/seed) ---
 
   /** Returns a result object rather than throwing: errors do not cross the RPC boundary reliably. */
-  loadSeed(kind: string, body: unknown): { ok: true; report: SeedReport } | { ok: false; error: string } {
+  loadSeed(kind: string, body: unknown): { ok: true; report: unknown } | { ok: false; error: string } {
     try {
-      if (kind !== "study") return { ok: false, error: `unknown seed kind: ${kind} (supported: study)` };
-      return { ok: true, report: loadStudySeed(doDb(this.ctx), body) };
+      const db = doDb(this.ctx);
+      if (kind === "study") return { ok: true, report: loadStudySeed(db, body) };
+      if (kind === "config") return { ok: true, report: loadConfigSeed(db, body) };
+      if (kind === "reading") return { ok: true, report: loadReadingSeed(db, body) };
+      return { ok: false, error: `unknown seed kind: ${kind} (supported: study, config, reading)` };
     } catch (err) {
       if (err instanceof SeedError) return { ok: false, error: err.message };
       console.error("Seed load failed:", err);

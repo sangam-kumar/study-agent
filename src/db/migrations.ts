@@ -162,6 +162,28 @@ CREATE TABLE IF NOT EXISTS plan_item (
 CREATE INDEX IF NOT EXISTS idx_plan_item_date ON plan_item(date);
 `;
 
+// Things read or watched for their own sake. Separate from the v1 reading_queue (URL-only, shared via Telegram).
+// state is the user's; seed reloads refresh metadata but never touch it.
+const V3_SQL = `
+CREATE TABLE IF NOT EXISTS reading_item (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  seed_key TEXT UNIQUE,
+  title TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'article',
+  subtype TEXT,
+  author TEXT,
+  topic TEXT,
+  priority TEXT,
+  est_length TEXT,
+  url TEXT,
+  note TEXT,
+  source TEXT NOT NULL DEFAULT 'user' CHECK(source IN ('queue','library','user')),
+  state TEXT NOT NULL DEFAULT 'backlog' CHECK(state IN ('backlog','queued','active','done','dropped')),
+  ordinal INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_reading_item_state ON reading_item(state);
+`;
+
 export interface Migration {
   version: number;
   name: string;
@@ -171,6 +193,7 @@ export interface Migration {
 export const MIGRATIONS: Migration[] = [
   { version: 1, name: "v1 base tables", sql: SCHEMA_SQL },
   { version: 2, name: "product loop: events, plan, tracks, overrides", sql: V2_SQL },
+  { version: 3, name: "reading items", sql: V3_SQL },
 ];
 
 /** Apply any migration not yet recorded. Safe on a database that predates schema_migrations. */

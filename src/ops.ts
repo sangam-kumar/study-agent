@@ -37,6 +37,7 @@ export type Op =
   | { type: "start_reading"; reading_id: number }
   | { type: "keep_reading"; reading_id: number }
   | { type: "finish_reading"; reading_id: number }
+  | { type: "hold_reading"; reading_id: number }
   | { type: "drop_reading"; reading_id: number; reason?: string }
   | { type: "note"; text: string };
 
@@ -166,6 +167,7 @@ export function validateOp(input: unknown): Op {
     case "start_reading":
     case "keep_reading":
     case "finish_reading":
+    case "hold_reading":
       return { type: o.type, reading_id: int(o, "reading_id", 1) };
     case "drop_reading":
       return { type: "drop_reading", reading_id: int(o, "reading_id", 1), reason: optStr(o, "reason", 300) };
@@ -378,7 +380,7 @@ const HANDLERS: { [K in Op["type"]]: (h: HandlerCtx, op: Extract<Op, { type: K }
 
   start_reading(h, op) {
     const r = requireReading(h, op.reading_id);
-    if (!["backlog", "queued", "dropped"].includes(r.state as string)) throw new OpError(`${r.title} is already ${r.state}`);
+    if (!["backlog", "queued", "paused", "dropped"].includes(r.state as string)) throw new OpError(`${r.title} is already ${r.state}`);
     if (r.slot) {
       const busy = h.db.all<{ title: string }>(
         "SELECT title FROM reading_item WHERE slot = ? AND state IN ('sampling','active') AND id <> ?", r.slot, op.reading_id,
@@ -398,9 +400,17 @@ const HANDLERS: { [K in Op["type"]]: (h: HandlerCtx, op: Extract<Op, { type: K }
 
   finish_reading(h, op) {
     const r = requireReading(h, op.reading_id);
-    if (r.state !== "sampling" && r.state !== "active") throw new OpError(`${r.title} is ${r.state}, not being read`);
+    if (r.state === "done") throw new OpError(`${r.title} is already marked done`);
+    // Allowed from any other state: a book read before it was ever started on the shelf is still finished.
     h.rec.update("reading_item", op.reading_id, { state: "done", ended_at: iso(h.now) });
     return { lane: "reading", refId: op.reading_id, summary: `Finished: ${r.title}` };
+  },
+
+  hold_reading(h, op) {
+    const r = requireReading(h, op.reading_id);
+    if (r.state !== "sampling" && r.state !== "active") throw new OpError(`${r.title} is ${r.state}, only a book being read can be put on hold`);
+    h.rec.update("reading_item", op.reading_id, { state: "paused" });
+    return { lane: "reading", refId: op.reading_id, summary: `On hold: ${r.title} (start it again any time)` };
   },
 
   drop_reading(h, op) {

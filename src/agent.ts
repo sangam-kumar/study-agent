@@ -11,7 +11,7 @@ import { getLLMProvider } from "./ai/provider";
 import { doDb } from "./db/db.ts";
 import { runMigrations } from "./db/migrations.ts";
 import { OpError, applyOp, undoLast } from "./ops.ts";
-import { renderShelf } from "./reading.ts";
+import { parseBookCommand, renderShelf } from "./reading.ts";
 import type { ApplyOptions, ApplyResult, UndoResult } from "./ops.ts";
 import { SerialQueue } from "./queue.ts";
 import { SeedError, loadStudySeed, queryPlan } from "./seed.ts";
@@ -393,7 +393,7 @@ export class StudyAgent extends Agent<Env> {
           "• <code>/undo</code> - Undo the last plan change",
           "• <code>/tracks</code> - Show where each study track pointer is",
           "• <code>/books</code> - What you're reading and what to pick next",
-          "• <code>/book add|start|keep|done|drop</code> - Manage the shelf (drop takes a reason)",
+          "• <code>/book add|start|keep|hold|done|drop</code> - Manage the shelf by id or title (drop takes a reason)",
           "",
           "💡 <i>Tip: Send any URL to queue it, or send text/voice to log thoughts & workouts!</i>",
         ].join("\n");
@@ -423,27 +423,19 @@ export class StudyAgent extends Agent<Env> {
       }
 
       case "/book": {
-        const sub = (args[0] ?? "").toLowerCase();
-        const id = parseInt(args[1] ?? "", 10);
-        let op: Record<string, unknown> | null = null;
-        if (sub === "add") {
-          const [title, author] = args.slice(1).join(" ").split("|").map((x) => x.trim());
-          if (title) op = { type: "add_reading", title, author: author || undefined };
-        } else if (!isNaN(id) && sub === "start") op = { type: "start_reading", reading_id: id };
-        else if (!isNaN(id) && sub === "keep") op = { type: "keep_reading", reading_id: id };
-        else if (!isNaN(id) && sub === "done") op = { type: "finish_reading", reading_id: id };
-        else if (!isNaN(id) && sub === "drop") op = { type: "drop_reading", reading_id: id, reason: args.slice(2).join(" ").trim() || undefined };
-        if (!op) {
-          await telegram.sendMessage(chatId, "Usage: <code>/book add Title | Author</code>, <code>/book start|keep|done|drop &lt;id&gt; [reason]</code>. See /books for ids.");
+        const cmd = parseBookCommand(doDb(this.ctx), args);
+        if ("reply" in cmd) {
+          await telegram.sendMessage(chatId, cmd.reply);
           break;
         }
+        const safe = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;");
         try {
-          const r = this.applyPlanOp(op, { source: "telegram" });
-          await telegram.sendMessage(chatId, `✅ ${r.summary.replace(/&/g, "&amp;").replace(/</g, "&lt;")}
+          const r = this.applyPlanOp(cmd.op, { source: "telegram" });
+          await telegram.sendMessage(chatId, `✅ ${safe(r.summary)}
 <i>/undo to reverse</i>`);
         } catch (err) {
           if (!(err instanceof OpError)) throw err;
-          await telegram.sendMessage(chatId, `⚠️ ${err.message.replace(/&/g, "&amp;").replace(/</g, "&lt;")}`);
+          await telegram.sendMessage(chatId, `⚠️ ${safe(err.message)}`);
         }
         break;
       }

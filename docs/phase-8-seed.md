@@ -122,7 +122,7 @@ Tested against an in-memory database (dry run deletes nothing; `all` keeps seed 
 
 ## 8. The reading shelf
 
-`reading_item` flow: `backlog|queued -> sampling -> active -> done`, with `dropped` as an exit from any open state (revivable, with the reason kept). Each book has a `slot` (technical or narrative/founder); only **one sampling/active book per slot**.
+`reading_item` flow: `backlog|queued -> sampling -> active -> done`, with `paused` (on hold: frees the slot, keeps the book) and `dropped` (given up, reason kept) as side exits. Both can be started again. Each book has a `slot` (technical or narrative/founder); only **one sampling/active book per slot**.
 
 | Command | Op | Effect |
 |---|---|---|
@@ -130,7 +130,10 @@ Tested against an in-memory database (dry run deletes nothing; `all` keeps seed 
 | `/book add Title \| Author` | `add_reading` | lands in the backlog as your own entry |
 | `/book start <id>` | `start_reading` | begins sampling; refused if the slot is busy; also revives a dropped book |
 | `/book keep <id>` | `keep_reading` | sampling -> active |
-| `/book done <id>` | `finish_reading` | finished |
+| `/book hold <id>` | `hold_reading` | on hold: frees the slot so you can start another book; `start` resumes it |
+| `/book done <id>` | `finish_reading` | finished. Works from **any** state, so a book you read before it was on the shelf, or a queue article, can be marked done directly |
 | `/book drop <id> [reason]` | `drop_reading` | dropped, reason kept; never re-offered unless you start it again |
+
+Anywhere an `<id>` is expected you can type part of the title instead (`/book done hundred-page`). If several books match, the bot lists them with ids. `drop` takes the first word as the reference unless you separate the reason with `|`: `/book drop mom test | boring`. `/books` also lists books on hold and the next three queue items.
 
 Every change is an op, so `/undo` reverses it. The shortlist and its order live in `study-repo/scripts/seed_reading.py` (`SHORTLIST_*`). Natural-language ("drop Sapiens, boring") arrives with the inference layer in Phase 9; the sampling check-in prompt arrives with the day loop in Phase 10.

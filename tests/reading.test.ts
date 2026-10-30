@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { applyOp, undoLast, OpError } from "../src/ops.ts";
-import { currentReading, droppedBooks, pickCandidates, renderShelf } from "../src/reading.ts";
+import { currentReading, droppedBooks, parseBookCommand, pickCandidates, renderShelf } from "../src/reading.ts";
 import { loadReadingSeed } from "../src/seed-reading.ts";
 import { parseScopes, resetData } from "../src/reset.ts";
 import { count, fixedNow, migratedDb } from "./helpers.ts";
@@ -89,7 +89,7 @@ test("ops reject bad transitions and bad input", () => {
   const db = shelf();
   const ddia = id(db, "DDIA");
   assert.throws(() => applyOp(db, { type: "keep_reading", reading_id: ddia }, { now }), /not sampling/);
-  assert.throws(() => applyOp(db, { type: "finish_reading", reading_id: ddia }, { now }), /not being read/);
+  assert.throws(() => applyOp(db, { type: "hold_reading", reading_id: ddia }, { now }), /only a book being read/);
   assert.throws(() => applyOp(db, { type: "start_reading", reading_id: 9999 }, { now }), /not found/);
   assert.throws(() => applyOp(db, { type: "add_reading", title: "x", slot: "weird" }, { now }), OpError);
 });
@@ -127,4 +127,59 @@ test("renderShelf escapes titles and lists ids", () => {
   assert.match(out, /#\d+/);
   applyOp(db, { type: "start_reading", reading_id: id(db, "A <b> & C") }, { now });
   assert.match(renderShelf(db, 0), /A &lt;b&gt; &amp; C/);
+});
+
+test("a book read before it was ever started can be marked done, and is no longer offered", () => {
+  const db = shelf();
+  applyOp(db, { type: "finish_reading", reading_id: id(db, "DDIA") }, { now });
+  assert.equal(state(db, "DDIA"), "done");
+  assert.equal(pickCandidates(db, 0)[0].title, "SICP");
+  assert.throws(() => applyOp(db, { type: "finish_reading", reading_id: id(db, "DDIA") }, { now }), /already marked done/);
+  undoLast(db, { now });
+  assert.equal(state(db, "DDIA"), "backlog");
+});
+
+test("hold frees the slot, keeps the book, and start resumes it", () => {
+  const db = shelf();
+  const ddia = id(db, "DDIA");
+  applyOp(db, { type: "start_reading", reading_id: ddia }, { now });
+  applyOp(db, { type: "hold_reading", reading_id: ddia }, { now });
+  assert.equal(state(db, "DDIA"), "paused");
+  applyOp(db, { type: "start_reading", reading_id: id(db, "SICP") }, { now }); // slot is free now
+  assert.throws(() => applyOp(db, { type: "start_reading", reading_id: ddia }, { now }), /one technical book at a time/);
+  assert.match(renderShelf(db, 0), /On hold[\s\S]*DDIA/);
+  applyOp(db, { type: "hold_reading", reading_id: id(db, "SICP") }, { now });
+  applyOp(db, { type: "start_reading", reading_id: ddia }, { now });
+  assert.equal(state(db, "DDIA"), "sampling");
+});
+
+test("queue items (no slot) can be marked done and the next one surfaces", () => {
+  const db = migratedDb();
+  loadReadingSeed(db, { items: [1, 2, 3, 4].map((n) => ({ key: `q${n}`, title: `Article ${n}`, source: "queue", state: "queued", ordinal: n })) }, now);
+  assert.match(renderShelf(db, 0), /Article 1[\s\S]*Article 2[\s\S]*Article 3/);
+  assert.doesNotMatch(renderShelf(db, 0), /Article 4/);
+  applyOp(db, { type: "finish_reading", reading_id: id(db, "Article 1") }, { now });
+  assert.doesNotMatch(renderShelf(db, 0), /Article 1/);
+  assert.match(renderShelf(db, 0), /Article 4/);
+});
+
+test("/book command: id or title fragment, ambiguity, drop reasons, usage", () => {
+  const db = shelf();
+  const ddia = id(db, "DDIA");
+  assert.deepEqual(parseBookCommand(db, ["done", "ddia"]), { op: { type: "finish_reading", reading_id: ddia } });
+  assert.deepEqual(parseBookCommand(db, ["start", `#${ddia}`]), { op: { type: "start_reading", reading_id: ddia } });
+  assert.deepEqual(parseBookCommand(db, ["drop", String(ddia), "too", "dense"]), { op: { type: "drop_reading", reading_id: ddia, reason: "too dense" } });
+  assert.deepEqual(parseBookCommand(db, ["drop", "mom", "test", "|", "boring"]), {
+    op: { type: "drop_reading", reading_id: id(db, "Mom Test"), reason: "boring" },
+  });
+  assert.deepEqual(parseBookCommand(db, ["hold", "sicp"]), { op: { type: "hold_reading", reading_id: id(db, "SICP") } });
+  const many = parseBookCommand(db, ["done", "wild"]);
+  assert.ok("reply" in many && /Several match/.test(many.reply) && /Wild A/.test(many.reply) && /Wild B/.test(many.reply));
+  assert.ok("reply" in parseBookCommand(db, ["done", "nonexistent"]));
+  assert.ok("reply" in parseBookCommand(db, ["done", "9999"]));
+  assert.ok("reply" in parseBookCommand(db, []));
+  assert.ok("reply" in parseBookCommand(db, ["add"]));
+  assert.deepEqual(parseBookCommand(db, ["add", "Deep", "Work", "|", "Cal", "Newport"]), {
+    op: { type: "add_reading", title: "Deep Work", author: "Cal Newport" },
+  });
 });

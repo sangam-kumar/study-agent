@@ -6,12 +6,12 @@
 //   workouts   workout_logs                         (v1 table)
 //   reminders  reminders                            (+ the matching delayed alarms: see agent.resetData)
 //   reading    reading_queue                        (v1 table)
-//   snooze     bot_state snooze keys
+//   snooze     the pause (config 'mute', and the v1 bot_state snooze keys)
 //   plan       revision, event, inbox, plan_item, day_plan, override, note
 //   pointers   every pointer back to unit 1         (units themselves are kept)
 //   shelf      reading_item states back to seeded (queued/backlog); hand-added books removed
 //
-// NOT touched by any scope: tables/migrations, track/unit_list/unit content, config, lane, target,
+// NOT touched by any scope: tables/migrations, track/unit_list/unit content, config (except 'mute'), lane, target,
 // pattern, rotation, other bot_state keys.
 
 import type { Db } from "./db/db.ts";
@@ -54,7 +54,7 @@ export function parseScopes(input: string | string[]): ResetScope[] {
 
 function countRows(db: Db, scope: ResetScope): number {
   const c = (sql: string) => db.all<{ c: number }>(sql)[0].c;
-  if (scope === "snooze") return c(`SELECT COUNT(*) AS c FROM bot_state WHERE ${SNOOZE_WHERE}`);
+  if (scope === "snooze") return c(`SELECT COUNT(*) AS c FROM bot_state WHERE ${SNOOZE_WHERE}`) + c("SELECT COUNT(*) AS c FROM config WHERE key = 'mute'");
   if (scope === "pointers") return c("SELECT COUNT(*) AS c FROM pointer WHERE ordinal <> 1");
   if (scope === "shelf") return c(`SELECT COUNT(*) AS c FROM reading_item WHERE ${SHELF_DIRTY}`);
   return TABLES[scope].reduce((n, t) => n + c(`SELECT COUNT(*) AS c FROM ${t}`), 0);
@@ -70,7 +70,10 @@ export function resetData(db: Db, scopes: ResetScope[], dryRun: boolean): Record
     for (const scope of scopes) {
       result[scope] = countRows(db, scope);
       if (dryRun) continue;
-      if (scope === "snooze") db.run(`DELETE FROM bot_state WHERE ${SNOOZE_WHERE}`);
+      if (scope === "snooze") {
+        db.run(`DELETE FROM bot_state WHERE ${SNOOZE_WHERE}`); // v1 keys
+        db.run("DELETE FROM config WHERE key = 'mute'");
+      }
       else if (scope === "pointers") db.run("UPDATE pointer SET ordinal = 1 WHERE ordinal <> 1");
       else if (scope === "shelf") {
         db.run("DELETE FROM reading_item WHERE seed_key IS NULL");

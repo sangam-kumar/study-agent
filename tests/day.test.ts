@@ -207,3 +207,105 @@ test("locking a day that only has a place set drafts it first", () => {
   assert.ok(loadItems(db, TUE).length > 0);
   assert.equal(loadDayRow(db, TUE)!.place, "OFFICE");
 });
+
+// ---------------------------------------------------------------- Phase 11
+
+import { BED_RE, lastWeeksOfficeDays, officeWindow, parseWeekdays, sleepNights, formatHours } from "../src/day.ts";
+import { recordEvent } from "../src/day.ts";
+
+test("weekday parsing for office days", () => {
+  assert.deepEqual(parseWeekdays("tue thu"), [1, 3]);
+  assert.deepEqual(parseWeekdays("Tuesday and Thursday"), [1, 3]);
+  assert.deepEqual(parseWeekdays("mon, wed"), [0, 2]);
+  assert.deepEqual(parseWeekdays("thurs & fri"), [3, 4]);
+  assert.equal(parseWeekdays("tomorrow"), null);
+  assert.equal(parseWeekdays(""), null);
+});
+
+test("office window: named weekdays office, the other weekdays remote, weekends untouched", () => {
+  // from Sunday 1 Nov: the coming Mon-Fri
+  assert.deepEqual(officeWindow("2026-11-01", [1, 3]), [
+    { date: "2026-11-02", place: "REMOTE" },
+    { date: "2026-11-03", place: "OFFICE" },
+    { date: "2026-11-04", place: "REMOTE" },
+    { date: "2026-11-05", place: "OFFICE" },
+    { date: "2026-11-06", place: "REMOTE" },
+  ]);
+  // from a Wednesday it rolls into next week
+  assert.deepEqual(officeWindow("2026-10-28", [0]).map((p) => p.date), ["2026-10-28", "2026-10-29", "2026-10-30", "2026-11-02", "2026-11-03"]);
+});
+
+test("set_places replaces a week (an old office day doesn't linger) and undoes in one step", () => {
+  const db = world();
+  applyOp(db, { type: "set_place", dates: [MON, WED], place: "OFFICE" });
+  applyOp(db, { type: "set_places", places: officeWindow(MON, [1, 3]) });
+  const place = (d: string) => loadDayRow(db, d)?.place;
+  assert.equal(place(MON), "REMOTE");
+  assert.equal(place(TUE), "OFFICE");
+  assert.equal(place(WED), "REMOTE");
+  undoLast(db);
+  assert.equal(place(MON), "OFFICE");
+  assert.equal(place(TUE), undefined);
+});
+
+test("last week's office days become the default", () => {
+  const db = world();
+  applyOp(db, { type: "set_places", places: officeWindow(MON, [1, 3]) });
+  assert.deepEqual(lastWeeksOfficeDays(db, "2026-11-01"), [1, 3]);
+  assert.deepEqual(lastWeeksOfficeDays(db, "2026-11-10"), [], "too long ago");
+});
+
+test("sleep: bedtime to an explicit 'up'; a first message is not a wake time", () => {
+  const db = world();
+  // Mon night: bed 23:40, up Tue 07:00 -> 7 h 20 min
+  recordEvent(db, "bed", MON, {}, at(MON, "23:40"));
+  recordEvent(db, "wake", TUE, { trigger: "wake_word" }, at(TUE, "07:00"));
+  // Tue night: bed 00:30 (still Tuesday's day), first message Wed 09:00 -> not counted
+  recordEvent(db, "bed", TUE, {}, at(WED, "00:30"));
+  recordEvent(db, "wake", WED, { trigger: "first_message" }, at(WED, "09:00"));
+  const nights = sleepNights(db, MON, WED);
+  assert.equal(nights.length, 1);
+  assert.equal(nights[0].date, TUE);
+  assert.equal(formatHours(nights[0].hours), "7 h 20 min");
+});
+
+test("sleep: implausible gaps are ignored; the latest bedtime wins", () => {
+  const db = world();
+  recordEvent(db, "bed", MON, {}, at(MON, "22:00"));
+  recordEvent(db, "bed", MON, {}, at(MON, "23:30")); // said good night twice
+  recordEvent(db, "wake", TUE, { trigger: "wake_word" }, at(TUE, "06:30"));
+  assert.equal(formatHours(sleepNights(db, TUE, TUE)[0].hours), "7 h");
+  recordEvent(db, "wake", WED, { trigger: "wake_word" }, at(WED, "07:00")); // no bedtime the night before
+  assert.equal(sleepNights(db, WED, WED).length, 0);
+});
+
+test("the morning shows last night; the evening flags a low weekly average only", () => {
+  const db = world();
+  for (const [bedDay, bed, wakeDay, wake] of [[MON, "01:30", MON, "06:30"], [MON, "23:30", TUE, "05:00"]] as const) {
+    recordEvent(db, "bed", bedDay, {}, at(bedDay, bed));
+    recordEvent(db, "wake", wakeDay, { trigger: "wake_word" }, at(wakeDay, wake));
+  }
+  lockDay(db, TUE, "auto", at(MON, "23:00"));
+  assert.match(renderMorning(db, TUE), /slept 5 h 30 min/);
+  ensureDraft(db, TUE, at(TUE, "21:30"), { force: true });
+  assert.match(renderEvening(db, TUE), /sleep 5\.3 h a night \(aim 7\+\)/);
+});
+
+test("bedtime phrases", () => {
+  for (const s of ["sleeping", "Good night", "goodnight!", "gn", "going to bed", "off to sleep"]) assert.ok(BED_RE.test(s), s);
+  for (const s of ["sleeping bag on amazon", "I slept badly", "night shift tomorrow"]) assert.ok(!BED_RE.test(s), s);
+});
+
+test("office-day phrases are caught in code; anything else goes to the model", async () => {
+  const { OFFICE_RE } = await import("../src/day.ts");
+  const days = (s: string) => {
+    const m = OFFICE_RE.exec(s);
+    return m ? parseWeekdays(m[1]) : null;
+  };
+  assert.deepEqual(days("office tue thu"), [1, 3]);
+  assert.deepEqual(days("in office monday and wednesday"), [0, 2]);
+  assert.deepEqual(days("I'm in the office on Tue"), [1]);
+  assert.deepEqual(days("wfo: thu, fri"), [3, 4]);
+  assert.equal(days("in office tomorrow"), null, "not weekday names: left to the model");
+  assert.equal(days("add office party on friday"), null);
+});

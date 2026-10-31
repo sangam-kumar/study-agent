@@ -20,8 +20,9 @@ import { ResetError, parseScopes, resetData as resetRows } from "./reset.ts";
 import { loadConfigSeed } from "./seed-config.ts";
 import { loadReadingSeed } from "./seed-reading.ts";
 import {
-  ensureDraft, eventExists, getConfig, loadDayRow, loadItems, lockDay, recordEvent,
-  renderDayBlock, renderEvening, renderMorning, renderPlan,
+  BED_RE, OFFICE_RE, ensureDraft, eventExists, formatHours, getConfig, lastWeeksOfficeDays, loadDayRow, loadItems, lockDay,
+  officeWindow, parseWeekdays, recordEvent, renderDayBlock, renderEvening, renderMorning, renderPlan, sleepNights,
+  weekdayNames,
 } from "./day.ts";
 import { DEFAULT_TIMES, JOB_CALLBACK, JOB_KINDS, nextRun } from "./jobs.ts";
 import type { JobTimes } from "./jobs.ts";
@@ -47,8 +48,9 @@ export class StudyAgent extends Agent<Env> {
     console.log("StudyAgent initialized: schema migrated, day-loop jobs scheduled");
   }
 
-  /** The v1 fixed-time cron cues (08:15 / 17:00 / 21:30) are replaced by the day loop. */
+  /** The v1 fixed-time cron cues (08:15 / 17:00 / 21:30) are replaced by the day loop; v1 snooze keys by config "mute". */
   private async retireOldCues(): Promise<void> {
+    this.sql`DELETE FROM bot_state WHERE key IN ('snooze_until', 'snooze_reason')`;
     const old = new Set(["morningCue", "commuteCue", "eveningSynthesis"]);
     for (const sch of await this.listSchedules({ type: "cron" })) {
       if (old.has(sch.callback)) await this.cancelSchedule(sch.id);
@@ -194,34 +196,29 @@ export class StudyAgent extends Agent<Env> {
            FROM reading_queue WHERE status = ${status} ORDER BY id ASC LIMIT ${limit}`;
   }
 
-  // --- Snooze / Dynamic Rescheduling Helpers ---
+  // --- Pausing my messages ("snooze") ---
+  // Stored as one config value set through an op, so /undo works. It pauses only messages the agent
+  // starts (the evening message and the fallback morning brief); reminders you set still fire.
 
-  setSnooze(durationHours: number, reason = "User requested snooze"): number {
+  setSnooze(durationHours: number, reason = "paused"): number {
     const untilMs = Date.now() + durationHours * 3600 * 1000;
-    this.setBotConfig("snooze_until", untilMs.toString());
-    this.setBotConfig("snooze_reason", reason);
+    this.applyPlanOp({ type: "set_config", key: "mute", value: JSON.stringify({ until: untilMs, reason }) }, { source: "telegram" });
     return untilMs;
   }
 
   clearSnooze(): void {
-    this.sql`DELETE FROM bot_state WHERE key IN ('snooze_until', 'snooze_reason')`;
+    if (this.getSnoozeStatus().snoozed) {
+      this.applyPlanOp({ type: "set_config", key: "mute", value: JSON.stringify({ until: 0 }) }, { source: "telegram" });
+    }
   }
 
   getSnoozeStatus(): { snoozed: boolean; until?: string; reason?: string } {
-    const untilStr = this.getBotConfig("snooze_until");
-    if (!untilStr) return { snoozed: false };
-
-    const untilMs = parseInt(untilStr, 10);
-    if (Date.now() > untilMs) {
-      this.clearSnooze();
-      return { snoozed: false };
-    }
-
-    return {
-      snoozed: true,
-      until: new Date(untilMs).toISOString(),
-      reason: this.getBotConfig("snooze_reason") ?? "Unknown",
-    };
+    let mute: { until?: number; reason?: string } = {};
+    try {
+      mute = JSON.parse(getConfig(doDb(this.ctx), "mute", "{}"));
+    } catch {}
+    if (!mute.until || Date.now() > mute.until) return { snoozed: false };
+    return { snoozed: true, until: new Date(mute.until).toISOString(), reason: mute.reason ?? "paused" };
   }
 
   // --- Statistics Helper ---
@@ -350,6 +347,24 @@ Total queued articles: <b>${count}</b>`
       return;
     }
 
+    // "sleeping" / "good night": a bedtime. No model needed.
+    if (BED_RE.test(text.trim())) {
+      recordEvent(db, "bed", today, {}, nowMs);
+      const wakeBy = loadDayRow(db, tomorrow)?.wake_by;
+      const until = wakeBy ? istWallToMs(tomorrow, wakeBy) : null;
+      const hint = until && until > nowMs ? ` Up by ${wakeBy} — that's ${formatHours((until - nowMs) / 3_600_000)} from now.` : "";
+      await telegram.sendMessage(chatId, `🌙 Good night.${hint}`);
+      return;
+    }
+
+    // "office tue thu" / "in office monday and wednesday": the coming week's office days.
+    const office = OFFICE_RE.exec(text.trim());
+    const officeDays = office ? parseWeekdays(office[1]) : null;
+    if (officeDays) {
+      await telegram.sendMessage(chatId, this.applyOfficeDays(officeDays));
+      return;
+    }
+
     const outcome = await understand({ db, backends: buildBackends(this.env), nowMs }, text);
     const heard = source === "telegram_voice" ? `\n\n<i>Heard: "${escapeHtml(text)}"</i>` : "";
 
@@ -389,7 +404,7 @@ Total queued articles: <b>${count}</b>`
       case "snooze": {
         const untilMs = this.setSnooze(outcome.hours, outcome.reason);
         const until = new Date(untilMs).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" });
-        await telegram.sendMessage(chatId, `😴 <b>Snooze Activated!</b> My messages paused until <b>${until} IST</b> (${outcome.hours}h).\n<i>Reason: ${escapeHtml(outcome.reason)}</i>${heard}`);
+        await telegram.sendMessage(chatId, `😴 <b>Paused</b> until <b>${until} IST</b> (${outcome.hours}h). Reminders you set still fire.\n<i>/unsnooze to resume · /undo to reverse</i>${heard}`);
         return;
       }
       case "reply":
@@ -432,11 +447,19 @@ Total queued articles: <b>${count}</b>`
     const nowMs = Date.now();
     const today = dayKey(nowMs);
     const wakeWord = /^\/?(up|awake|gm|good morning|morning)[.!]?$/i.test(text);
+    // A bedtime is never a wake-up, even if it's the first message of the day.
+    if (BED_RE.test(text.trim())) return false;
     // Before ~04:30 a message is more likely a late night than a wake-up.
     const earliest = istWallToMs(today, getConfig(db, "wake_earliest", "04:30"));
     if (nowMs < earliest && !wakeWord) return false;
 
-    if (!eventExists(db, "wake", today)) recordEvent(db, "wake", today, { trigger: wakeWord ? "wake_word" : "first_message" }, nowMs);
+    // An explicit "up" is the real wake time (sleep is measured from it), even after an earlier message.
+    const hasExplicit = db.all(
+      "SELECT 1 FROM event WHERE type = 'wake' AND ref_id = ? AND json_extract(payload_json, '$.trigger') = 'wake_word'", today,
+    ).length > 0;
+    if (wakeWord ? !hasExplicit : !eventExists(db, "wake", today)) {
+      recordEvent(db, "wake", today, { trigger: wakeWord ? "wake_word" : "first_message" }, nowMs);
+    }
     if (!eventExists(db, "morning_brief", today)) {
       await this.sendMorning(telegram, chatId, "wake");
       return wakeWord;
@@ -486,6 +509,37 @@ Total queued articles: <b>${count}</b>`
     }
   }
 
+  /** Sets the next 7 days: these weekdays in the office, the other weekdays remote. Returns the reply. */
+  private applyOfficeDays(weekdays: number[]): string {
+    const db = doDb(this.ctx);
+    const nowMs = Date.now();
+    const today = dayKey(nowMs);
+    try {
+      this.applyPlanOp({ type: "set_places", places: officeWindow(today, weekdays) }, { source: "telegram" });
+    } catch (err) {
+      if (!(err instanceof OpError)) throw err;
+      return `⚠️ ${escapeHtml(err.message)}`;
+    }
+    const tomorrow = addDays(today, 1);
+    if (loadDayRow(db, tomorrow)?.status === "draft") ensureDraft(db, tomorrow, nowMs);
+    return weekdays.length
+      ? `🏢 Office: <b>${weekdayNames(weekdays)}</b> · other weekdays remote.\n<i>/undo to reverse</i>`
+      : "🏠 All remote this week.";
+  }
+
+  /**
+   * Sunday evening: next week's office days default to last week's (silence keeps them, like the lock).
+   * Only days you haven't set already are touched. Returns the line to add to the evening message.
+   */
+  private officeDefaultForNextWeek(today: string): string {
+    const db = doDb(this.ctx);
+    const last = lastWeeksOfficeDays(db, addDays(today, 1));
+    if (last.length === 0) return "🏢 Which days are you in the office this week? Reply e.g. <b>office tue thu</b>.";
+    const places = officeWindow(addDays(today, 1), last).filter((p) => !loadDayRow(db, p.date)?.place);
+    if (places.length > 0) applyOp(db, { type: "set_places", places }, { source: "system" });
+    return `🏢 Office this week: <b>${weekdayNames(last)}</b>, same as last week. Reply e.g. <b>office mon wed</b> to change.`;
+  }
+
   /** 21:30: recap today, draft tomorrow. */
   async jobEvening(_payload: string): Promise<void> {
     try {
@@ -494,8 +548,9 @@ Total queued articles: <b>${count}</b>`
       const db = doDb(this.ctx);
       const nowMs = Date.now();
       const today = dayKey(nowMs);
+      const officeLine = weekdayIndex(today) === 6 ? this.officeDefaultForNextWeek(today) : "";
       ensureDraft(db, addDays(today, 1), nowMs);
-      await t.telegram.sendMessage(t.chatId, renderEvening(db, today));
+      await t.telegram.sendMessage(t.chatId, `${renderEvening(db, today)}${officeLine ? `\n\n${officeLine}` : ""}`);
       recordEvent(db, "evening_recap", today, {}, nowMs);
     } catch (err) {
       console.error("jobEvening failed:", err);
@@ -554,7 +609,8 @@ Total queued articles: <b>${count}</b>`
           "📋 <b>Plan</b>",
           "• <code>/plan</code> · <code>/plan tomorrow</code> - See a day",
           "• <code>/up</code> - Today's plan now · <code>/lock</code> - Lock tomorrow now",
-          "• <code>/office tue thu</code> - Your office days this week (others are remote)",
+          "• <code>/office tue thu</code> - Office days for the coming week (others remote). On Sunday I keep last week's unless you change them.",
+          "• <code>/sleep</code> - Last 7 nights. Say <b>good night</b> at bedtime and <b>up</b> when you wake.",
           "• <code>/undo</code> - Undo the last change",
           "• <code>/mirror</code> - Write yesterday/today/tomorrow to study-repo now (also happens at every lock)",
           "",
@@ -566,12 +622,12 @@ Total queued articles: <b>${count}</b>`
           "⏰ <b>Reminders &amp; other</b>",
           "• <code>/remind &lt;minutes&gt; &lt;text&gt;</code> · <code>/reminders</code> (for a date and time, just say it)",
           "• <code>/inbox</code> - Messages I wasn't sure about (<code>/inbox done &lt;id&gt;</code>)",
-          "• <code>/snooze &lt;hours&gt;</code> · <code>/unsnooze</code> - Pause my messages",
+          "• <code>/snooze &lt;hours&gt;</code> · <code>/unsnooze</code> - Pause my messages (your reminders still fire)",
           "• <code>/jobs</code> · <code>/testcue evening|lock|morning</code> · <code>/status</code> · <code>/queue</code> · <code>/recent</code>",
           "",
           "💬 <b>Or just say it</b> (text or voice):",
           "• <i>done with gym</i> · <i>skip reading today</i> · <i>add call mom tomorrow</i> · <i>move DSA to Saturday</i>",
-          "• <i>travelling Fri to Sun</i> · <i>down with a fever</i> · <i>feeling low today</i>",
+          "• <i>travelling Fri to Sun</i> · <i>down with a fever</i> · <i>feeling low today</i> · <i>office tue thu</i>",
           "• <i>finished the 100 page ML book</i> · <i>drop Sapiens, boring</i> · <i>did 3 DSA problems</i>",
           "• <i>remind me at 6:30 pm to play ball</i> · <i>remind me Friday at 4pm to submit the form</i>",
           "• <i>knee hurts, go easy on legs</i>",
@@ -689,13 +745,13 @@ Total queued articles: <b>${count}</b>`
         const reason = args.slice(1).join(" ") || "User requested snooze";
         const untilMs = this.setSnooze(hours, reason);
         const untilDate = new Date(untilMs).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" });
-        await telegram.sendMessage(chatId, `😴 <b>Snoozed!</b> My messages paused until <b>${untilDate} IST</b> (${hours}h).`);
+        await telegram.sendMessage(chatId, `😴 <b>Paused</b> until <b>${untilDate} IST</b> (${hours}h). Reminders you set still fire.\n<i>/unsnooze to resume · /undo to reverse</i>`);
         break;
       }
 
       case "/unsnooze": {
         this.clearSnooze();
-        await telegram.sendMessage(chatId, "🔔 <b>Snooze cleared!</b> My messages are back on.");
+        await telegram.sendMessage(chatId, "🔔 My messages are back on.");
         break;
       }
 
@@ -772,23 +828,27 @@ Total queued articles: <b>${count}</b>`
       }
 
       case "/office": {
-        // "/office tue thu": those days (this week, or next week once they've passed) are office days.
-        const idx = args.filter(Boolean).map((a) => WEEKDAY_NAMES.findIndex((w) => w.toLowerCase() === a.slice(0, 3).toLowerCase()));
-        if (idx.length === 0 || idx.some((i) => i < 0)) {
-          await telegram.sendMessage(chatId, "Usage: <code>/office tue thu</code> (the days you'll be in the office)");
+        // "/office tue thu": in the next 7 days those weekdays are office days, the others remote.
+        const days = parseWeekdays(args.join(" "));
+        if (!days) {
+          await telegram.sendMessage(chatId, "Usage: <code>/office tue thu</code> (the days you'll be in the office). You can also just say <i>office tue thu</i>.");
           break;
         }
+        await telegram.sendMessage(chatId, this.applyOfficeDays(days));
+        break;
+      }
+
+      case "/sleep": {
+        const db = doDb(this.ctx);
         const today = dayKey(Date.now());
-        const dates = idx.map((w) => addDays(today, (w - weekdayIndex(today) + 7) % 7));
-        try {
-          const r = this.applyPlanOp({ type: "set_place", dates, place: "OFFICE" }, { source: "telegram" });
-          const tomorrow = addDays(today, 1);
-          if (loadDayRow(doDb(this.ctx), tomorrow)?.status === "draft") ensureDraft(doDb(this.ctx), tomorrow, Date.now());
-          await telegram.sendMessage(chatId, `🏢 ${escapeHtml(r.summary)}\n<i>Other days stay remote. /undo to reverse</i>`);
-        } catch (err) {
-          if (!(err instanceof OpError)) throw err;
-          await telegram.sendMessage(chatId, `⚠️ ${escapeHtml(err.message)}`);
+        const nights = sleepNights(db, addDays(today, -6), today);
+        if (nights.length === 0) {
+          await telegram.sendMessage(chatId, "😴 No nights recorded yet. Say <b>good night</b> when you go to bed and <b>up</b> when you wake.");
+          break;
         }
+        const avg = nights.reduce((x, n) => x + n.hours, 0) / nights.length;
+        const lines = nights.map((n) => `• ${dateLabel(n.date)} — ${formatHours(n.hours)}`);
+        await telegram.sendMessage(chatId, `😴 <b>Last 7 days</b>\n${lines.join("\n")}\n\nAverage ${formatHours(avg)} over ${nights.length} night${nights.length === 1 ? "" : "s"}.`);
         break;
       }
 

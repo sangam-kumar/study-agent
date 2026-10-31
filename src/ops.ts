@@ -34,6 +34,7 @@ export type Op =
   | { type: "advance_pointer"; list_id: string; to_ordinal?: number }
   | { type: "set_config"; key: string; value: string }
   | { type: "set_place"; dates: string[]; place: "OFFICE" | "REMOTE" }
+  | { type: "set_places"; places: { date: string; place: "OFFICE" | "REMOTE" }[] }
   | { type: "add_reading"; title: string; author?: string; kind?: string; url?: string; note?: string; slot?: ReadingSlot; shortlist?: boolean }
   | { type: "start_reading"; reading_id: number }
   | { type: "keep_reading"; reading_id: number }
@@ -158,6 +159,15 @@ export function validateOp(input: unknown): Op {
       if (!Array.isArray(o.dates) || o.dates.length === 0 || o.dates.length > 14) fail("dates must be 1-14 dates");
       const dates = o.dates.map((d) => date({ d }, "d"));
       return { type: "set_place", dates: [...new Set(dates)], place: oneOf(o, "place", ["OFFICE", "REMOTE"] as const) };
+    }
+    case "set_places": {
+      if (!Array.isArray(o.places) || o.places.length === 0 || o.places.length > 14) fail("places must be 1-14 entries");
+      const places = o.places.map((p) => {
+        if (typeof p !== "object" || p === null) fail("each place needs a date and a place");
+        const po = p as Obj;
+        return { date: date(po, "date"), place: oneOf(po, "place", ["OFFICE", "REMOTE"] as const) };
+      });
+      return { type: "set_places", places };
     }
     case "add_reading":
       return {
@@ -332,6 +342,16 @@ const HANDLERS: { [K in Op["type"]]: (h: HandlerCtx, op: Extract<Op, { type: K }
     // Finishing an item moves whatever it was drawn from, in the same undoable change.
     if (op.status === "done" && item.status !== "done") completeSource(h, item);
     return { lane: item.lane as string, refId: op.item_id, summary: `${item.title} → ${op.status}` };
+  },
+
+  set_places(h, op) {
+    for (const p of op.places) {
+      const plan = h.rec.get("day_plan", p.date, "date");
+      if (!plan) h.rec.insert("day_plan", { date: p.date, place: p.place, status: "draft", version: 1 }, "date");
+      else if (plan.place !== p.place) h.rec.update("day_plan", p.date, { place: p.place, version: (plan.version as number) + 1 }, "date");
+    }
+    const office = op.places.filter((p) => p.place === "OFFICE").map((p) => p.date);
+    return { summary: office.length ? `Office days: ${office.join(", ")}; other weekdays remote` : "All remote" };
   },
 
   set_place(h, op) {

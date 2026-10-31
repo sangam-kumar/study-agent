@@ -215,6 +215,12 @@ function weeklyLine(db: Db, date: string): string {
   const parts: string[] = [];
   if (lifts < floor) parts.push(`lifts ${lifts}/${floor}`);
   if (reads < readFloor && weekdayIndex(date) >= 3) parts.push(`reading ${reads}/${readFloor}`);
+  const nights = sleepNights(db, week, date);
+  const sleepFloor = db.all<{ floor: number | null }>("SELECT floor FROM target WHERE metric = 'sleep_h_avg' AND period = 'week'")[0]?.floor ?? 7;
+  if (nights.length >= 2) {
+    const avg = nights.reduce((a, n) => a + n.hours, 0) / nights.length;
+    if (avg < sleepFloor) parts.push(`sleep ${avg.toFixed(1)} h a night (aim ${sleepFloor}+)`);
+  }
   return parts.length ? `This week so far: ${parts.join(" · ")}` : "";
 }
 
@@ -249,7 +255,10 @@ export function renderEvening(db: Db, today: string): string {
 export function renderMorning(db: Db, date: string): string {
   const row = loadDayRow(db, date);
   const mark = row?.locked_by === "auto" ? " <i>(locked last night)</i>" : row?.status === "draft" ? " <i>(draft)</i>" : "";
-  return [`☀️ <b>${dateLabel(date)}</b>${mark}`, renderDayBlock(db, date), "", `<i>Tell me as you go: "done with gym", "skip reading", "feeling low". /plan to see this again.</i>`].join("\n");
+  const slept = sleepNights(db, date, date)[0];
+  const sleepLine = slept ? `
+<i>😴 slept ${formatHours(slept.hours)}</i>` : "";
+  return [`☀️ <b>${dateLabel(date)}</b>${mark}${sleepLine}`, renderDayBlock(db, date), "", `<i>Tell me as you go: "done with gym", "skip reading", "feeling low". /plan to see this again.</i>`].join("\n");
 }
 
 export function renderPlan(db: Db, date: string): string {
@@ -286,3 +295,86 @@ export function resolvePlanItem(db: Db, ref: string, dates: string[], statuses: 
   }
   return { reply: `I couldn't find "${esc(ref)}" in the plan for ${dates.map(dateLabel).join(" or ")}. /plan shows it.` };
 }
+
+// ------------------------------------------------------------------ office days
+
+const DAY_PREFIX = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+
+/** "office tue thu", "in office monday and wednesday", "I'm in the office on Tue": group 1 is the days. */
+export const OFFICE_RE = /^(?:i'?m\s+|i am\s+)?(?:in\s+(?:the\s+)?)?(?:office|wfo)(?:\s+days?)?(?:\s+on)?[\s:]+(.+)$/i;
+
+/** "tue thu", "Tuesday and Thursday", "mon, wed" -> [1, 3]. null if a word isn't a weekday or nothing is named. */
+export function parseWeekdays(text: string): number[] | null {
+  const words = text.toLowerCase().split(/[\s,&/+]+/).filter((w) => w && !["and", "on", "days", "day"].includes(w));
+  if (words.length === 0) return null;
+  const out = new Set<number>();
+  for (const w of words) {
+    const i = DAY_PREFIX.findIndex((p) => w.startsWith(p)); // tue, tues, tuesday
+    if (i < 0) return null;
+    out.add(i);
+  }
+  return [...out].sort();
+}
+
+/**
+ * The next 7 days from `start`: the named weekdays become office days, the other weekdays remote.
+ * Weekends are left alone. Naming the days replaces the whole week, so an old office day doesn't linger.
+ */
+export function officeWindow(start: string, officeWeekdays: number[]): { date: string; place: Place }[] {
+  const out: { date: string; place: Place }[] = [];
+  for (let i = 0; i < 7; i++) {
+    const date = addDays(start, i);
+    const w = weekdayIndex(date);
+    if (w >= 5) continue;
+    out.push({ date, place: officeWeekdays.includes(w) ? "OFFICE" : "REMOTE" });
+  }
+  return out;
+}
+
+/** Weekdays that were office days in the 7 days before `today` (the default for the coming week). */
+export function lastWeeksOfficeDays(db: Db, today: string): number[] {
+  const rows = db.all<{ date: string }>(
+    "SELECT date FROM day_plan WHERE place = 'OFFICE' AND date >= ? AND date < ?", addDays(today, -7), today,
+  );
+  return [...new Set(rows.map((r) => weekdayIndex(r.date)).filter((w) => w < 5))].sort();
+}
+
+export const weekdayNames = (days: number[]) => days.map((d) => ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][d]).join(", ");
+
+// ------------------------------------------------------------------------ sleep
+
+/** "sleeping", "good night", "gn", "off to bed"... A bedtime needs no model. */
+export const BED_RE = /^(sleeping|going to (bed|sleep)|off to (bed|sleep)|heading to bed|good ?night|gn|nite|night night|bed ?time|to bed)[.!]*$/i;
+
+const MIN_SLEEP_H = 2;
+const MAX_SLEEP_H = 14;
+
+/**
+ * Nights whose wake-up ("up") falls on a date in [from, to]: hours from the latest bedtime before
+ * that wake. A first message of the day is not a wake time (you may have been up for hours), so only
+ * an explicit "up" counts. Implausible gaps are ignored.
+ */
+export function sleepNights(db: Db, from: string, to: string): { date: string; hours: number }[] {
+  const wakes = db.all<{ ref_id: string; ts: string }>(
+    `SELECT ref_id, ts FROM event WHERE type = 'wake' AND ref_id >= ? AND ref_id <= ?
+       AND json_extract(payload_json, '$.trigger') = 'wake_word' ORDER BY ref_id`,
+    from, to,
+  );
+  const out: { date: string; hours: number }[] = [];
+  for (const w of wakes) {
+    const wakeMs = Date.parse(w.ts);
+    const bed = db.all<{ ts: string }>(
+      "SELECT ts FROM event WHERE type = 'bed' AND ts < ? AND ts > ? ORDER BY ts DESC LIMIT 1",
+      w.ts, new Date(wakeMs - MAX_SLEEP_H * 3_600_000).toISOString(),
+    )[0];
+    if (!bed) continue;
+    const hours = (wakeMs - Date.parse(bed.ts)) / 3_600_000;
+    if (hours >= MIN_SLEEP_H && hours <= MAX_SLEEP_H) out.push({ date: w.ref_id, hours });
+  }
+  return out;
+}
+
+export const formatHours = (h: number) => {
+  const m = Math.round(h * 60);
+  return `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ""}`;
+};

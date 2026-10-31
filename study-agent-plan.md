@@ -205,9 +205,9 @@ flowchart TD
 * **Sub-steps:**
   - [x] 11.1 (done in Phase 10): Ops `set_override` (`TRAVEL/SICK/OUT/LOW_MOOD`), `skip`, `move`, `add_item`; confirmation line + undo.
   - [x] 11.2 (done in Phase 10): `LOW_MOOD` → minimum item per lane.
-  - [~] 11.3: `place` per date (done: `/office`, `set_place`); still to do: Sunday question "which 2 days in office?" (default = last week's pair).
-  - [ ] 11.4: `bed`/`wake` events from `sleeping`/`up`; sleep average derived.
-  - [ ] 11.5: Retire v1 `snooze` into overrides.
+  - [x] 11.3: `place` per date (`/office`, "office tue thu", `set_places`); Sunday default = last week's office days, with the question.
+  - [x] 11.4: `bed`/`wake` events from "good night"/"up"; nightly hours, morning line, weekly average in the recap when below the floor, `/sleep`.
+  - [x] 11.5: v1 `snooze` retired into one undoable config value (`mute`); kept as an hours-long pause, not an override (see docs/phase-11-overrides.md §4).
 * **Check:** "traveling Fri–Sun" → Fri–Sun drafts have no gym, fragment-only study; "undo" restores.
 
 ### Phase 12: Repo mirror (unparks Phase 5) [M1]

@@ -15,14 +15,33 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
   return btoa(binary);
 }
 
+/** Each model has its own free daily quota, so GEMINI_MODEL is an ordered, comma-separated list. */
+export function geminiModels(env: Env): string[] {
+  const list = String(env.GEMINI_MODEL || "gemini-3.5-flash-lite").split(",").map((m) => m.trim()).filter(Boolean);
+  return list.length > 0 ? list : ["gemini-3.5-flash-lite"];
+}
+
+/** "429 quota 20/day (gemini-2.5-flash)" instead of a wall of JSON. */
+function describeError(status: number, body: string): string {
+  try {
+    const err = (JSON.parse(body) as { error?: { message?: string; details?: { violations?: { quotaId?: string; quotaValue?: string }[] }[] } }).error;
+    const v = err?.details?.flatMap((d) => d.violations ?? [])[0];
+    if (v?.quotaId) return `HTTP ${status} quota ${v.quotaValue ?? "?"} (${v.quotaId})`;
+    return `HTTP ${status}: ${(err?.message ?? body).slice(0, 160)}`;
+  } catch {
+    return `HTTP ${status}: ${body.slice(0, 160)}`;
+  }
+}
+
 export class GeminiBackend implements InferBackend {
-  readonly name = "gemini";
+  readonly name: string;
   private readonly apiKey: string;
   private readonly model: string;
 
-  constructor(env: Env) {
-    this.apiKey = env.GEMINI_API_KEY;
-    this.model = env.GEMINI_MODEL || "gemini-2.5-flash";
+  constructor(apiKey: string, model: string) {
+    this.apiKey = apiKey;
+    this.model = model;
+    this.name = `gemini:${model}`;
   }
 
   private async call(body: unknown): Promise<string> {
@@ -32,7 +51,7 @@ export class GeminiBackend implements InferBackend {
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
-    if (!res.ok) throw new Error(`Gemini HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    if (!res.ok) throw new Error(`${this.name} ${describeError(res.status, await res.text())}`);
     const data = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
     if (!text) throw new Error("Gemini returned an empty answer");
@@ -65,18 +84,27 @@ export class GeminiBackend implements InferBackend {
   }
 }
 
+/** Runs a Workers AI model. In the Worker it is the AI binding; scripts can pass the REST API instead. */
+export type AiRunner = (model: string, input: Record<string, unknown>) => Promise<unknown>;
+
 export class WorkersAiBackend implements InferBackend {
   readonly name = "workers-ai";
+  private readonly run: AiRunner;
   private readonly model: string;
 
-  constructor(private readonly env: Env) {
-    this.model = env.LLAMA_MODEL || "@cf/meta/llama-3.3-70b-instruct";
+  constructor(run: AiRunner, model = "@cf/meta/llama-3.3-70b-instruct") {
+    this.run = run;
+    this.model = model;
+  }
+
+  static fromEnv(env: Env): WorkersAiBackend {
+    return new WorkersAiBackend((m, input) => env.AI.run(m as any, input as any) as Promise<unknown>, env.LLAMA_MODEL || undefined);
   }
 
   async json(req: { system: string; user: string; schema: JsonSchema }): Promise<unknown> {
     // Llama has no response schema: describe the shape in the prompt and ask for bare JSON.
     const system = `${req.system}\n\nReply with a single JSON object matching this JSON schema and nothing else:\n${JSON.stringify(req.schema)}`;
-    const out = (await this.env.AI.run(this.model as any, {
+    const out = (await this.run(this.model, {
       messages: [
         { role: "system", content: system },
         { role: "user", content: req.user },
@@ -95,30 +123,38 @@ export class WorkersAiBackend implements InferBackend {
   }
 
   async transcribe(audio: ArrayBuffer): Promise<string> {
-    const r = (await this.env.AI.run("@cf/openai/whisper", { audio: [...new Uint8Array(audio)] })) as { text?: string };
+    const r = (await this.run("@cf/openai/whisper", { audio: [...new Uint8Array(audio)] })) as { text?: string };
     return r?.text?.trim() ?? "";
   }
 }
 
-/** Ordered by preference. LLM_PROVIDER=cloudflare forces Workers AI only. */
+const useGemini = (env: Env) => (env.LLM_PROVIDER as string) !== "cloudflare" && !!env.GEMINI_API_KEY;
+
+/**
+ * Ordered by preference: every configured Gemini model (each with its own free quota), then
+ * Workers AI. infer() moves down the list on any error, including a 429.
+ * LLM_PROVIDER=cloudflare forces Workers AI only.
+ */
 export function buildBackends(env: Env): InferBackend[] {
-  const workers = new WorkersAiBackend(env);
-  if ((env.LLM_PROVIDER as string) === "cloudflare" || !env.GEMINI_API_KEY) return [workers];
-  return [new GeminiBackend(env), workers];
+  const workers = WorkersAiBackend.fromEnv(env);
+  if (!useGemini(env)) return [workers];
+  return [...geminiModels(env).map((m) => new GeminiBackend(env.GEMINI_API_KEY, m)), workers];
 }
 
-/** Voice -> text. Gemini hears audio natively; Whisper is the fallback. Returns "" if both fail. */
+/** Voice -> text. Gemini hears audio natively (each model in turn); Whisper is the fallback. Returns "" if all fail. */
 export async function transcribe(env: Env, audio: ArrayBuffer, mimeType: string): Promise<string> {
-  if ((env.LLM_PROVIDER as string) !== "cloudflare" && env.GEMINI_API_KEY) {
-    try {
-      const t = await new GeminiBackend(env).transcribe(audio, mimeType);
-      if (t) return t;
-    } catch (err) {
-      console.warn("Gemini transcription failed, falling back to Whisper:", err);
+  if (useGemini(env)) {
+    for (const model of geminiModels(env)) {
+      try {
+        const t = await new GeminiBackend(env.GEMINI_API_KEY, model).transcribe(audio, mimeType);
+        if (t) return t;
+      } catch (err) {
+        console.warn(`Gemini transcription failed on ${model}:`, err);
+      }
     }
   }
   try {
-    return await new WorkersAiBackend(env).transcribe(audio);
+    return await WorkersAiBackend.fromEnv(env).transcribe(audio);
   } catch (err) {
     console.error("Whisper transcription failed:", err);
     return "";

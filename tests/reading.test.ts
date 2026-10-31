@@ -172,7 +172,8 @@ test("/book command: id or title fragment, ambiguity, drop reasons, usage", () =
   assert.deepEqual(parseBookCommand(db, ["drop", "mom", "test", "|", "boring"]), {
     op: { type: "drop_reading", reading_id: id(db, "Mom Test"), reason: "boring" },
   });
-  assert.deepEqual(parseBookCommand(db, ["hold", "sicp"]), { op: { type: "hold_reading", reading_id: id(db, "SICP") } });
+  const notReading = parseBookCommand(db, ["hold", "sicp"]);
+  assert.ok("reply" in notReading && /SICP is backlog/.test(notReading.reply), "only a book being read can be held");
   const many = parseBookCommand(db, ["done", "wild"]);
   assert.ok("reply" in many && /Several match/.test(many.reply) && /Wild A/.test(many.reply) && /Wild B/.test(many.reply));
   assert.ok("reply" in parseBookCommand(db, ["done", "nonexistent"]));
@@ -182,4 +183,38 @@ test("/book command: id or title fragment, ambiguity, drop reasons, usage", () =
   assert.deepEqual(parseBookCommand(db, ["add", "Deep", "Work", "|", "Cal", "Newport"]), {
     op: { type: "add_reading", title: "Deep Work", author: "Cal Newport" },
   });
+});
+
+test("title matching: substrings, acronyms, and the way people shorten titles", async () => {
+  const { titleScore } = await import("../src/reading.ts");
+  assert.equal(titleScore("The Hundred-Page Machine Learning Book", "100 page ml book"), 2);
+  assert.equal(titleScore("The Hundred-Page Machine Learning Book", "hundred page"), 3);
+  assert.equal(titleScore("Designing Data-Intensive Applications (DDIA)", "DDIA"), 3);
+  assert.equal(titleScore("Structure and Interpretation of Computer Programs (SICP)", "sicp"), 3);
+  assert.equal(titleScore("Hands-On Machine Learning", "100 page ml book"), 0);
+  assert.equal(titleScore("Sapiens: A Brief History of Humankind", "the sapiens book"), 2);
+  assert.equal(titleScore("The Mom Test", "deep work"), 0);
+});
+
+test("/book resolution only considers books the action applies to", () => {
+  const db = migratedDb();
+  loadReadingSeed(db, {
+    items: [
+      { key: "q", title: "DDIA - pick a chapter you haven't read", source: "queue", state: "queued", ordinal: 1 },
+      { key: "b", title: "Designing Data-Intensive Applications (DDIA)", source: "library", state: "backlog", slot: "technical", ordinal: 2 },
+      { key: "h", title: "The Hundred-Page Machine Learning Book", source: "library", state: "backlog", slot: "technical", ordinal: 3 },
+    ],
+  }, now);
+  const book = id(db, "Designing Data-Intensive Applications (DDIA)");
+  applyOp(db, { type: "start_reading", reading_id: book }, { now });
+  // only the book is being read, so "hold DDIA" is unambiguous
+  assert.deepEqual(parseBookCommand(db, ["hold", "DDIA"]), { op: { type: "hold_reading", reading_id: book } });
+  // "done" applies to both: ask
+  const both = parseBookCommand(db, ["done", "DDIA"]);
+  assert.ok("reply" in both && /Several match/.test(both.reply));
+  // the way people actually say it
+  assert.deepEqual(parseBookCommand(db, ["done", "100 page ml book"]), { op: { type: "finish_reading", reading_id: id(db, "The Hundred-Page Machine Learning Book") } });
+  // nothing in a usable state: say why instead of a generic miss
+  const keep = parseBookCommand(db, ["keep", "hundred"]);
+  assert.ok("reply" in keep && /is backlog/.test(keep.reply));
 });

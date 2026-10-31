@@ -119,8 +119,47 @@ const USAGE =
   "<code>/book drop &lt;id or title&gt; | reason</code>\n" +
   "<i>done works on anything, including books you read before.</i> See /books for ids.";
 
-/** Finds one book by id or by part of its title. Done books are matched last. */
-function resolveBook(db: Db, ref: string): { id: number } | { reply: string } {
+// ---------------------------------------------------------------- matching titles
+
+const STOPWORDS = new Set(["the", "a", "an", "of", "and", "my", "book", "books", "article", "for", "now", "to", "on", "in"]);
+/** How people shorten titles. Applied to what was typed, never to the titles. */
+const EXPAND: Record<string, string[]> = {
+  ml: ["machine", "learning"], ai: ["artificial", "intelligence"], dl: ["deep", "learning"],
+  "100": ["hundred"], "1": ["one"], "2": ["two"], "3": ["three"],
+};
+
+const words = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().split(" ").filter(Boolean);
+/** Stems "pages" ~ "page", "learning" ~ "learn": a typed word matches a title word that starts with it, or vice versa. */
+const sameWord = (a: string, b: string) => a === b || (a.length >= 4 && b.startsWith(a)) || (b.length >= 4 && a.startsWith(b));
+
+/** 3 = substring or acronym, 2 = every typed word is in the title, 0 = no match. */
+export function titleScore(title: string, ref: string): number {
+  const tw = words(title);
+  const r = words(ref).join(" ");
+  if (r && ` ${tw.join(" ")} `.includes(r)) return 3;
+  const acronyms = [...title.matchAll(/\(([A-Za-z0-9]{2,8})\)/g)].map((m) => m[1].toLowerCase());
+  acronyms.push(tw.filter((w) => !STOPWORDS.has(w)).map((w) => w[0]).join(""));
+  const rw = words(ref).filter((w) => !STOPWORDS.has(w));
+  if (rw.length === 1 && rw[0].length >= 3 && acronyms.includes(rw[0])) return 3;
+  const want = rw.flatMap((w) => EXPAND[w] ?? [w]);
+  if (want.length > 0 && want.every((w) => tw.some((x) => sameWord(w, x)))) return 2;
+  return 0;
+}
+
+/** Which states each action can apply to, so "pause DDIA" only considers what you're reading. */
+const ACTION_STATES: Record<string, string[]> = {
+  start_reading: ["backlog", "queued", "paused", "dropped"],
+  keep_reading: ["sampling"],
+  hold_reading: ["sampling", "active"],
+  finish_reading: ["backlog", "queued", "sampling", "active", "paused", "dropped"],
+  drop_reading: ["backlog", "queued", "sampling", "active", "paused"],
+};
+
+/**
+ * Finds one book by id, or by title: substring, acronym ("DDIA") or all typed words ("100 page ml book").
+ * Only books in a state the action can apply to are considered. Ambiguity is returned, never guessed.
+ */
+function resolveBook(db: Db, ref: string, opType?: string): { id: number } | { reply: string } {
   const text = ref.trim().replace(/^#/, "");
   if (/^\d+$/.test(text)) {
     return db.all("SELECT 1 FROM reading_item WHERE id = ?", Number(text)).length > 0
@@ -128,14 +167,21 @@ function resolveBook(db: Db, ref: string): { id: number } | { reply: string } {
       : { reply: `No book with id ${text}.` };
   }
   if (text === "") return { reply: USAGE };
-  const rows = db.all<{ id: number; title: string; state: string }>(
-    `SELECT id, title, state FROM reading_item WHERE instr(lower(title), lower(?)) > 0
-      ORDER BY (state = 'done'), id LIMIT 6`,
-    text,
-  );
-  if (rows.length === 0) return { reply: `Nothing on the shelf matches "${esc(text)}".` };
-  if (rows.length === 1) return { id: rows[0].id };
-  const list = rows.slice(0, 5).map((r) => `• <code>#${r.id}</code> ${esc(r.title)} <i>(${r.state})</i>`).join("\n");
+
+  const allowed = opType ? ACTION_STATES[opType] : undefined;
+  const rows = db.all<{ id: number; title: string; state: string }>("SELECT id, title, state FROM reading_item ORDER BY (state = 'done'), id");
+  const scored = rows.map((r) => ({ ...r, score: titleScore(r.title, text) })).filter((r) => r.score > 0);
+  if (scored.length === 0) return { reply: `Nothing on the shelf matches "${esc(text)}".` };
+
+  const usable = allowed ? scored.filter((r) => allowed.includes(r.state)) : scored;
+  if (usable.length === 0) {
+    const r = scored[0];
+    return { reply: `${esc(r.title)} is ${r.state}, so that doesn't apply to it.` };
+  }
+  const best = Math.max(...usable.map((r) => r.score));
+  const top = usable.filter((r) => r.score === best);
+  if (top.length === 1) return { id: top[0].id };
+  const list = top.slice(0, 5).map((r) => `• <code>#${r.id}</code> ${esc(r.title)} <i>(${r.state})</i>`).join("\n");
   return { reply: `Several match "${esc(text)}" — use the id:\n${list}` };
 }
 
@@ -174,7 +220,7 @@ export function parseBookCommand(db: Db, args: string[]): BookCommand {
     reason = others.join(" ").trim() || undefined;
   }
 
-  const found = resolveBook(db, ref);
+  const found = resolveBook(db, ref, type);
   if ("reply" in found) return found;
   const op: Record<string, unknown> = { type, reading_id: found.id };
   if (type === "drop_reading" && reason) op.reason = reason;

@@ -27,7 +27,7 @@ export const LANE_CARDS: Record<Intent, string> = {
   plan: `Plan edit. action: done | skip | add | move.
 ref: for done/skip/move, a word or part of the title of the plan item as the user said it ("gym", "DSA", "reading", "two sum").
 title: for add, the task in a few words. lane: for add, one of fitness, study, reading, personal.
-date: YYYY-MM-DD. For add and move it is the target day. For done/skip it is the day the item is on (default today). Use the calendar below.`,
+date: always give one, as YYYY-MM-DD from the calendar below. For add and move it is the target day ("Saturday" = the next Saturday). For done/skip it is the day the item is on (today unless the user says otherwise).`,
 
   override: `Change of circumstances for one or more days.
 override_type: TRAVEL (travelling) | SICK (ill) | OUT (out for the day, busy) | LOW_MOOD (low energy or mood).

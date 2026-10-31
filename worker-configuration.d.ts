@@ -4,7 +4,7 @@
 interface __BaseEnv_Env {
 	AI: Ai;
 	LLM_PROVIDER: "gemini";
-	GEMINI_MODEL: "gemini-2.0-flash";
+	GEMINI_MODEL: "gemini-3.5-flash-lite,gemini-3.5-flash,gemini-2.5-flash";
 	LLAMA_MODEL: "@cf/meta/llama-3.3-70b-instruct";
 	GITHUB_REPO: "sangam-kumar/study-repo";
 	STUDY_AGENT: DurableObjectNamespace<import("./src/index").StudyAgent>;

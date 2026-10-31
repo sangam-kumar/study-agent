@@ -9,7 +9,8 @@
     "typecheck": "tsc --noEmit",
     "cf-typegen": "wrangler types",
     "test": "node --test tests/*.test.ts",
-    "typecheck:tests": "tsc --noEmit -p tests/tsconfig.json"
+    "typecheck:tests": "tsc --noEmit -p tests/tsconfig.json",
+    "live-check": "node scripts/live-check.ts"
   },
   "keywords": [
     "cloudflare-workers",

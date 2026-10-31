@@ -107,9 +107,9 @@ const EXTRACT_SCHEMAS: Record<Intent, JsonSchema> = {
       ref: { type: "string", description: "done/skip/move: the item as the user named it" },
       title: { type: "string", description: "add: the task" },
       lane: { type: "string", enum: [...ADD_LANES] },
-      date: { type: "string", description: "YYYY-MM-DD" },
+      date: { type: "string", description: "YYYY-MM-DD from the calendar. add/move: the target day. done/skip: the day the item is on (today unless said otherwise)." },
     },
-    ["action"],
+    ["action", "date"],
   ),
   override: S(
     {

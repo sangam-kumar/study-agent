@@ -6,9 +6,9 @@ import type { Intent } from "./cards.ts";
 import { istNowLabel } from "./reminder-time.ts";
 import { currentReading, pickCandidates } from "./reading.ts";
 import { queryPlan } from "./seed.ts";
+import { loadItems } from "./day.ts";
+import { addDays, dateLabel, dayKey } from "./time.ts";
 
-const IST_OFFSET_MS = 330 * 60_000;
-const istDate = (ms: number) => new Date(ms + IST_OFFSET_MS).toISOString().slice(0, 10);
 const clip = (s: string, n = 90) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
 /** Intent -> the event lane whose recent history is worth showing. */
@@ -16,7 +16,7 @@ const EVENT_LANE: Partial<Record<Intent, string>> = { reading: "reading", study_
 
 export function buildSnapshot(db: Db, intent: Intent, nowMs: number): string {
   const lines: string[] = [`Now: ${istNowLabel(nowMs)}.`];
-  const today = istDate(nowMs);
+  const today = dayKey(nowMs);
 
   const overrides = db.all<{ type: string; start_date: string; end_date: string }>(
     "SELECT type, start_date, end_date FROM override WHERE revoked_at IS NULL AND start_date <= ? AND end_date >= ? LIMIT 3",
@@ -29,6 +29,17 @@ export function buildSnapshot(db: Db, intent: Intent, nowMs: number): string {
     new Date(nowMs).toISOString(),
   );
   if (notes.length > 0) lines.push(`Notes: ${notes.map((n) => clip(n.text)).join(" | ")}`);
+
+  if (intent === "plan" || intent === "override") {
+    const days = Array.from({ length: 8 }, (_, i) => addDays(today, i));
+    lines.push(`Calendar: ${days.map((d, i) => `${i === 0 ? "today " : i === 1 ? "tomorrow " : ""}${dateLabel(d)} = ${d}`).join("; ")}.`);
+    if (intent === "plan") {
+      for (const d of days.slice(0, 2)) {
+        const items = loadItems(db, d);
+        if (items.length > 0) lines.push(`${d === today ? "Today" : "Tomorrow"}: ${items.map((i) => `${clip(i.title, 50)} [${i.status}]`).join("; ")}.`);
+      }
+    }
+  }
 
   if (intent === "reading") {
     const now = currentReading(db);

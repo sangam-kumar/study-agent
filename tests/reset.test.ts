@@ -55,7 +55,7 @@ test("all clears test data but keeps seed content, config and unrelated state", 
   assert.equal(count(db, "unit"), 3, "seeded units survive");
   assert.equal(count(db, "track"), 1);
   assert.equal(db.all<{ ordinal: number }>("SELECT ordinal FROM pointer")[0].ordinal, 1, "pointer back to unit 1");
-  assert.equal(count(db, "schema_migrations"), 3);
+  assert.equal(count(db, "schema_migrations"), 4);
 });
 
 test("scopes are independent", () => {

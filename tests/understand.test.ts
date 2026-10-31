@@ -159,3 +159,66 @@ test("context packet stays small for every intent, with the real seeds", { skip:
     assert.ok(chars < 4000, `${intent} packet is ${chars} chars`);
   }
 });
+
+// ---------------------------------------------------------------- plan + override (Phase 10)
+
+const TODAY = "2026-10-30"; // nowMs is 14:30 IST that day
+const TOMORROW = "2026-10-31";
+
+function planned() {
+  const db = world();
+  for (const [date, lane, title] of [
+    [TODAY, "fitness", "Gym: Back / Biceps"],
+    [TODAY, "study", "DSA: Two Sum"],
+    [TODAY, "reading", "Read: Borges"],
+    [TOMORROW, "study", "System design: Scalability"],
+  ] as const) applyOp(db, { type: "add_item", date, lane, title }, { now });
+  return db;
+}
+const itemId = (db: ReturnType<typeof planned>, title: string) => db.all<{ id: number }>("SELECT id FROM plan_item WHERE title = ?", title)[0].id;
+
+test("plan: 'done with gym' resolves today's gym item by lane word", async () => {
+  const db = planned();
+  const out = await run(db, model("plan", 0.95, { action: "done", ref: "gym" }), "done with gym");
+  assert.deepEqual(out, { kind: "ops", ops: [{ type: "set_item_status", item_id: itemId(db, "Gym: Back / Biceps"), status: "done" }] });
+});
+
+test("plan: skip by title fragment; tomorrow is searched when today has no match", async () => {
+  const db = planned();
+  const a = await run(db, model("plan", 0.9, { action: "skip", ref: "reading" }), "skip reading today");
+  assert.deepEqual(a, { kind: "ops", ops: [{ type: "set_item_status", item_id: itemId(db, "Read: Borges"), status: "skipped" }] });
+  const b = await run(db, model("plan", 0.9, { action: "skip", ref: "system design" }), "skip system design");
+  assert.deepEqual(b, { kind: "ops", ops: [{ type: "set_item_status", item_id: itemId(db, "System design: Scalability"), status: "skipped" }] });
+});
+
+test("plan: add defaults to today and the personal lane; move needs a date", async () => {
+  const db = planned();
+  const add = await run(db, model("plan", 0.9, { action: "add", title: "Call mom", date: TOMORROW }), "add call mom tomorrow");
+  assert.deepEqual(add, { kind: "ops", ops: [{ type: "add_item", date: TOMORROW, lane: "personal", title: "Call mom" }] });
+  const mv = await run(db, model("plan", 0.9, { action: "move", ref: "dsa", date: "2026-11-01" }), "move DSA to Sunday");
+  assert.deepEqual(mv, { kind: "ops", ops: [{ type: "move_item", item_id: itemId(db, "DSA: Two Sum"), to_date: "2026-11-01" }] });
+  const m = model("plan", 0.9, { action: "move", ref: "dsa" });
+  assert.equal((await run(db, m, "move DSA")).kind, "inbox", "no date -> rejected twice -> inbox");
+});
+
+test("plan: nothing matching, or several, becomes a question", async () => {
+  const db = planned();
+  const none = await run(db, model("plan", 0.9, { action: "done", ref: "guitar" }), "done with guitar");
+  assert.ok(none.kind === "reply" && /couldn't find "guitar"/.test(none.html));
+  applyOp(db, { type: "add_item", date: TODAY, lane: "study", title: "DSA: Valid Anagram" }, { now });
+  const many = await run(db, model("plan", 0.9, { action: "done", ref: "dsa" }), "done dsa");
+  assert.ok(many.kind === "reply" && /Which one/.test(many.html) && /Valid Anagram/.test(many.html));
+});
+
+test("override: dates are validated and the affected range is reported", async () => {
+  const out = await run(world(), model("override", 0.95, { override_type: "TRAVEL", start_date: TODAY, end_date: "2026-11-01", note: "Pune" }), "travelling till Sunday");
+  assert.deepEqual(out, {
+    kind: "ops",
+    ops: [{ type: "set_override", override_type: "TRAVEL", start_date: TODAY, end_date: "2026-11-01", note: "Pune" }],
+    affects: { from: TODAY, to: "2026-11-01" },
+  });
+  const backwards = model("override", 0.95, { override_type: "SICK", start_date: TOMORROW, end_date: TODAY });
+  assert.equal((await run(world(), backwards, "sick")).kind, "inbox");
+  const farAway = model("override", 0.95, { override_type: "OUT", start_date: "2027-06-01", end_date: "2027-06-01" });
+  assert.equal((await run(world(), farAway, "out next june")).kind, "inbox");
+});

@@ -192,6 +192,9 @@ CREATE TABLE IF NOT EXISTS reading_item (
 CREATE INDEX IF NOT EXISTS idx_reading_item_state ON reading_item(state);
 `;
 
+// Optional plan items (a remote-day block, reading) are shown as such and never count as missed.
+const V4_SQL = `ALTER TABLE plan_item ADD COLUMN optional INTEGER NOT NULL DEFAULT 0;`;
+
 export interface Migration {
   version: number;
   name: string;
@@ -202,6 +205,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 1, name: "v1 base tables", sql: SCHEMA_SQL },
   { version: 2, name: "product loop: events, plan, tracks, overrides", sql: V2_SQL },
   { version: 3, name: "reading items", sql: V3_SQL },
+  { version: 4, name: "optional plan items", sql: V4_SQL },
 ];
 
 /** Apply any migration not yet recorded. Safe on a database that predates schema_migrations. */

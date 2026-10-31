@@ -193,19 +193,19 @@ flowchart TD
 ### Phase 10: Day loop — evening lock, wake-triggered morning [W3, W4]
 * **Phase Doc:** `docs/phase-10-day-loop.md`
 * **Sub-steps:**
-  - [ ] 10.1: `plan.ts` — pure functions: `draftDay(date)` from pattern + overrides + pointers + `place` (spec §4, §5c). No LLM.
-  - [ ] 10.2: Evening 21:30: recap from `event` and proposed tomorrow, with the bedtime line for a `GYM` day's `wake_by`.
-  - [ ] 10.3: 23:00 auto-lock (`locked_by='auto'`); edits after lock still apply as ops.
-  - [ ] 10.4: Morning: fires on `up`/first message (records `wake` event) or at fallback 09:30 weekdays / 10:30 weekends; filled template only.
-  - [ ] 10.5: Scheduler: one DO alarm at MIN(next job, next reminder); remove `commuteCue` and the fixed 08:15.
+  - [x] 10.1: `plan.ts` — pure functions: `draftDay(date)` from pattern + overrides + pointers + `place` (spec §4, §5c). No LLM.
+  - [x] 10.2: Evening 21:30: recap from `event` and proposed tomorrow, with the bedtime line for a `GYM` day's `wake_by`.
+  - [x] 10.3: 23:00 auto-lock (`locked_by='auto'`); edits after lock still apply as ops.
+  - [x] 10.4: Morning: fires on `up`/first message (records `wake` event) or at fallback 09:30 weekdays / 10:30 weekends; filled template only.
+  - [x] 10.5: Scheduler: one DO alarm at MIN(next job, next reminder); remove `commuteCue` and the fixed 08:15.
 * **Check:** no reply → tomorrow `locked/auto` at 23:00; morning text equals the locked plan; replayed update doesn't double-apply.
 
 ### Phase 11: Overrides, place, sleep/wake [W5]
 * **Phase Doc:** `docs/phase-11-overrides.md`
 * **Sub-steps:**
-  - [ ] 11.1: Ops `set_override` (`TRAVEL/SICK/OUT/LOW_MOOD`), `skip`, `move`, `add_item`; confirmation line + undo.
-  - [ ] 11.2: `LOW_MOOD` → minimum item per lane.
-  - [ ] 11.3: `place` per date; Sunday question "which 2 days in office?" (default = last week's pair).
+  - [x] 11.1 (done in Phase 10): Ops `set_override` (`TRAVEL/SICK/OUT/LOW_MOOD`), `skip`, `move`, `add_item`; confirmation line + undo.
+  - [x] 11.2 (done in Phase 10): `LOW_MOOD` → minimum item per lane.
+  - [~] 11.3: `place` per date (done: `/office`, `set_place`); still to do: Sunday question "which 2 days in office?" (default = last week's pair).
   - [ ] 11.4: `bed`/`wake` events from `sleeping`/`up`; sleep average derived.
   - [ ] 11.5: Retire v1 `snooze` into overrides.
 * **Check:** "traveling Fri–Sun" → Fri–Sun drafts have no gym, fragment-only study; "undo" restores.

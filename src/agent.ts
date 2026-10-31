@@ -19,6 +19,13 @@ import { SeedError, loadStudySeed, queryPlan } from "./seed.ts";
 import { ResetError, parseScopes, resetData as resetRows } from "./reset.ts";
 import { loadConfigSeed } from "./seed-config.ts";
 import { loadReadingSeed } from "./seed-reading.ts";
+import {
+  ensureDraft, eventExists, getConfig, loadDayRow, loadItems, lockDay, recordEvent,
+  renderDayBlock, renderEvening, renderMorning, renderPlan,
+} from "./day.ts";
+import { DEFAULT_TIMES, JOB_CALLBACK, JOB_KINDS, nextRun } from "./jobs.ts";
+import type { JobTimes } from "./jobs.ts";
+import { WEEKDAY_NAMES, addDays, dateLabel, dayKey, istWallToMs, weekdayIndex } from "./time.ts";
 
 /** Processed-update rows older than this are pruned; replays beyond it are not a concern. */
 const PROCESSED_UPDATE_TTL_MS = 7 * 24 * 3600 * 1000;
@@ -32,23 +39,45 @@ export class StudyAgent extends Agent<Env> {
   // Initialized once when the Durable Object wakes up
   override async onStart(): Promise<void> {
     this.initDatabase();
-    await this.registerAmbientCues();
-    console.log("StudyAgent initialized with SQLite schema and ambient cue schedules");
+    await this.retireOldCues();
+    await this.ensureJobs();
+    console.log("StudyAgent initialized: schema migrated, day-loop jobs scheduled");
   }
 
-  /**
-   * Register the 3 daily ambient cue cron schedules.
-   * Idempotent — Agents SDK deduplicates by callback+cron expression, safe to call on every DO wake.
-   * All times in UTC (IST = UTC+5:30):
-   *   08:15 IST → 02:45 UTC  cron: "45 2 * * *"
-   *   17:00 IST → 11:30 UTC  cron: "30 11 * * *"
-   *   21:30 IST → 16:00 UTC  cron: "0 16 * * *"
-   */
-  private async registerAmbientCues(): Promise<void> {
-    await this.schedule("45 2 * * *",  "morningCue",       "daily-morning");
-    await this.schedule("30 11 * * *", "commuteCue",       "daily-commute");
-    await this.schedule("0 16 * * *",  "eveningSynthesis", "daily-evening");
-    console.log("Ambient cue schedules registered");
+  /** The v1 fixed-time cron cues (08:15 / 17:00 / 21:30) are replaced by the day loop. */
+  private async retireOldCues(): Promise<void> {
+    const old = new Set(["morningCue", "commuteCue", "eveningSynthesis"]);
+    for (const sch of await this.listSchedules({ type: "cron" })) {
+      if (old.has(sch.callback)) await this.cancelSchedule(sch.id);
+    }
+  }
+
+  private jobTimes(): JobTimes {
+    const db = doDb(this.ctx);
+    return {
+      evening: getConfig(db, "evening_cue", DEFAULT_TIMES.evening),
+      lock: getConfig(db, "auto_lock", DEFAULT_TIMES.lock),
+      morningWeekday: getConfig(db, "morning_fallback_weekday", DEFAULT_TIMES.morningWeekday),
+      morningWeekend: getConfig(db, "morning_fallback_weekend", DEFAULT_TIMES.morningWeekend),
+    };
+  }
+
+  /** Exactly one pending one-shot schedule per daily job, at its next due time. Safe to call any time. */
+  async ensureJobs(): Promise<void> {
+    const now = Date.now();
+    const db = doDb(this.ctx);
+    const times = this.jobTimes();
+    const briefSent = eventExists(db, "morning_brief", dayKey(now));
+    const scheduled = await this.listSchedules({ type: "scheduled" });
+    for (const kind of JOB_KINDS) {
+      const callback = JOB_CALLBACK[kind];
+      const due = Math.floor(nextRun(kind, now, times, briefSent) / 1000);
+      // Leave anything due now alone: it may be the very alarm that woke this object.
+      const mine = scheduled.filter((sch) => sch.callback === callback && sch.time > Math.floor(now / 1000) + 5);
+      if (mine.length === 1 && mine[0].time === due) continue;
+      for (const sch of mine) await this.cancelSchedule(sch.id);
+      await this.schedule(new Date(due * 1000), callback, kind);
+    }
   }
 
   /**
@@ -74,7 +103,7 @@ export class StudyAgent extends Agent<Env> {
 
   /**
    * Dry run unless confirm is true. Clearing `reminders` also cancels the matching delayed
-   * alarms, otherwise a deleted row would still fire its message. The three daily cue
+   * alarms, otherwise a deleted row would still fire its message. The day-loop job
    * schedules are never touched.
    */
   async resetData(
@@ -258,6 +287,12 @@ export class StudyAgent extends Agent<Env> {
     const telegram = new TelegramClient(this.env.TELEGRAM_BOT_TOKEN);
 
     try {
+      // The first message of the morning is the wake signal: it delivers today's plan.
+      const raw = typeof message.text === "string" ? (message.text as string).trim() : "";
+      if (message.voice || (raw && (!raw.startsWith("/") || /^\/up\b/i.test(raw)))) {
+        if (await this.noteWake(telegram, chatId, raw)) return;
+      }
+
       if (message.voice) {
         // Voice memo: in-memory download, transcribe, then the same pipeline as typed text.
         const fileId = message.voice.file_id;
@@ -301,6 +336,16 @@ Total queued articles: <b>${count}</b>`
   private async handleNaturalLanguage(telegram: TelegramClient, chatId: string, text: string, source: string): Promise<void> {
     const db = doDb(this.ctx);
     const nowMs = Date.now();
+    const today = dayKey(nowMs);
+    const tomorrow = addDays(today, 1);
+
+    // "ok" after the evening message locks tomorrow. No model needed.
+    if (/^(ok|okay|ok lock|lock|lock it|looks good|sounds good|good|fine|yes|yep|👍)[.!]?$/i.test(text.trim()) && eventExists(db, "evening_recap", today) && loadDayRow(db, tomorrow)?.status === "draft") {
+      lockDay(db, tomorrow, "user", nowMs);
+      await telegram.sendMessage(chatId, `🔒 Locked ${dateLabel(tomorrow)}. See you in the morning.`);
+      return;
+    }
+
     const outcome = await understand({ db, backends: buildBackends(this.env), nowMs }, text);
     const heard = source === "telegram_voice" ? `\n\n<i>Heard: "${escapeHtml(text)}"</i>` : "";
 
@@ -314,7 +359,9 @@ Total queued articles: <b>${count}</b>`
           lines.push(`⚠️ ${escapeHtml(err.message)}`);
         }
         const undoable = lines.some((l) => l.startsWith("✅"));
-        await telegram.sendMessage(chatId, `${lines.join("\n")}${undoable ? "\n<i>/undo to reverse</i>" : ""}${heard}`);
+        const replanned = undoable ? this.replanAfterChange(today, outcome.affects) : [];
+        const updates = replanned.map((d) => `\n\n<b>${dateLabel(d)} now:</b>\n${renderDayBlock(db, d)}`).join("");
+        await telegram.sendMessage(chatId, `${lines.join("\n")}${undoable ? "\n<i>/undo to reverse</i>" : ""}${updates}${heard}`);
         return;
       }
       case "reminder":
@@ -325,6 +372,9 @@ Total queued articles: <b>${count}</b>`
         const day = new Date(nowMs + (330 - 180) * 60_000).toISOString().slice(0, 10);
         this.sql`INSERT INTO workout_logs (date, workout_type, exercises_json, notes)
                  VALUES (${day}, ${outcome.workout_type}, ${JSON.stringify(outcome.exercises)}, ${outcome.notes})`;
+        // A logged lift completes today's gym item, which moves the rotation on.
+        const gym = loadItems(db, today).find((i) => i.lane === "fitness" && i.status === "planned" && i.ref?.startsWith("rotation:"));
+        if (gym) this.applyPlanOp({ type: "set_item_status", item_id: gym.id, status: "done" }, { source: "telegram", raw: text });
         const list = outcome.exercises
           .map((e) => `• <b>${escapeHtml(e.name)}</b>: ${e.sets}x${e.reps}${e.weight_kg ? ` @ ${e.weight_kg}kg` : ""}`)
           .join("\n");
@@ -335,7 +385,7 @@ Total queued articles: <b>${count}</b>`
       case "snooze": {
         const untilMs = this.setSnooze(outcome.hours, outcome.reason);
         const until = new Date(untilMs).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" });
-        await telegram.sendMessage(chatId, `😴 <b>Snooze Activated!</b> Ambient cues paused until <b>${until} IST</b> (${outcome.hours}h).\n<i>Reason: ${escapeHtml(outcome.reason)}</i>${heard}`);
+        await telegram.sendMessage(chatId, `😴 <b>Snooze Activated!</b> My messages paused until <b>${until} IST</b> (${outcome.hours}h).\n<i>Reason: ${escapeHtml(outcome.reason)}</i>${heard}`);
         return;
       }
       case "reply":
@@ -345,6 +395,111 @@ Total queued articles: <b>${count}</b>`
         addToInbox(db, text, nowMs);
         await telegram.sendMessage(chatId, `🗂 Saved to your inbox — ${escapeHtml(outcome.reason)}. Nothing was changed.${heard}`);
         return;
+    }
+  }
+
+  // --- Day loop (plan.ts drafts, day.ts stores and renders, jobs.ts times it) ---
+
+  /**
+   * After a change: tomorrow's unlocked draft is refreshed (a finished unit should not reappear).
+   * An override re-plans the days it covers among today and tomorrow, even when locked.
+   * Returns the dates re-planned because of an override, so the reply can show them.
+   */
+  private replanAfterChange(today: string, affects?: { from: string; to: string }): string[] {
+    const db = doDb(this.ctx);
+    const nowMs = Date.now();
+    const tomorrow = addDays(today, 1);
+    const shown: string[] = [];
+    for (const d of [today, tomorrow]) {
+      const covered = !!affects && d >= affects.from && d <= affects.to;
+      if (covered) {
+        ensureDraft(db, d, nowMs, { force: true });
+        shown.push(d);
+      } else if (d === tomorrow && loadDayRow(db, d)?.status === "draft") {
+        ensureDraft(db, d, nowMs);
+      }
+    }
+    return shown;
+  }
+
+  /** Records the day's wake and sends the morning brief if it hasn't gone out. True if the message was only a wake word. */
+  private async noteWake(telegram: TelegramClient, chatId: string, text: string): Promise<boolean> {
+    const db = doDb(this.ctx);
+    const nowMs = Date.now();
+    const today = dayKey(nowMs);
+    const wakeWord = /^\/?(up|awake|gm|good morning|morning)[.!]?$/i.test(text);
+    // Before ~04:30 a message is more likely a late night than a wake-up.
+    const earliest = istWallToMs(today, getConfig(db, "wake_earliest", "04:30"));
+    if (nowMs < earliest && !wakeWord) return false;
+
+    if (!eventExists(db, "wake", today)) recordEvent(db, "wake", today, { trigger: wakeWord ? "wake_word" : "first_message" }, nowMs);
+    if (!eventExists(db, "morning_brief", today)) {
+      await this.sendMorning(telegram, chatId, "wake");
+      return wakeWord;
+    }
+    if (wakeWord) {
+      await telegram.sendMessage(chatId, "☀️ Morning. /plan shows today.");
+      return true;
+    }
+    return false;
+  }
+
+  private async sendMorning(telegram: TelegramClient, chatId: string, trigger: "wake" | "fallback" | "manual"): Promise<void> {
+    const db = doDb(this.ctx);
+    const nowMs = Date.now();
+    const today = dayKey(nowMs);
+    // Normally locked last night. If the evening never happened, plan and lock it now.
+    if (loadDayRow(db, today)?.status !== "locked") lockDay(db, today, "auto", nowMs);
+    await telegram.sendMessage(chatId, renderMorning(db, today));
+    if (trigger !== "manual") recordEvent(db, "morning_brief", today, { trigger }, nowMs);
+  }
+
+  private telegramAndChat(): { telegram: TelegramClient; chatId: string } | null {
+    const chatId = this.env.USER_TELEGRAM_CHAT_ID;
+    return chatId ? { telegram: new TelegramClient(this.env.TELEGRAM_BOT_TOKEN), chatId } : null;
+  }
+
+  /** 21:30: recap today, draft tomorrow. */
+  async jobEvening(_payload: string): Promise<void> {
+    try {
+      const t = this.telegramAndChat();
+      if (!t || this.isCurrentlySnoozed()) return;
+      const db = doDb(this.ctx);
+      const nowMs = Date.now();
+      const today = dayKey(nowMs);
+      ensureDraft(db, addDays(today, 1), nowMs);
+      await t.telegram.sendMessage(t.chatId, renderEvening(db, today));
+      recordEvent(db, "evening_recap", today, {}, nowMs);
+    } catch (err) {
+      console.error("jobEvening failed:", err);
+    } finally {
+      await this.ensureJobs();
+    }
+  }
+
+  /** 23:00: silence is consent. Tomorrow locks itself; nothing is sent. */
+  async jobLock(_payload: string): Promise<void> {
+    try {
+      const nowMs = Date.now();
+      lockDay(doDb(this.ctx), addDays(dayKey(nowMs), 1), "auto", nowMs);
+    } catch (err) {
+      console.error("jobLock failed:", err);
+    } finally {
+      await this.ensureJobs();
+    }
+  }
+
+  /** Fallback morning brief, only if nothing has woken it up yet today. */
+  async jobMorning(_payload: string): Promise<void> {
+    try {
+      const t = this.telegramAndChat();
+      const db = doDb(this.ctx);
+      if (!t || this.isCurrentlySnoozed() || eventExists(db, "morning_brief", dayKey(Date.now()))) return;
+      await this.sendMorning(t.telegram, t.chatId, "fallback");
+    } catch (err) {
+      console.error("jobMorning failed:", err);
+    } finally {
+      await this.ensureJobs();
     }
   }
 
@@ -361,30 +516,36 @@ Total queued articles: <b>${count}</b>`
       case "/start":
       case "/help": {
         const helpMessage = [
-          "🤖 <b>Study Agent Commands</b>",
+          "🤖 <b>Study Agent</b>",
           "",
-          "• <code>/remind &lt;minutes&gt; &lt;text&gt;</code> - Set a reminder (e.g. <code>/remind 5 Take a break</code>)",
-          "• <code>/reminders</code> - List upcoming pending reminders",
-          "• <code>/cues</code> - View daily ambient cue schedules & status",
-          "• <code>/testcue &lt;morning|commute|evening&gt;</code> - Test fire an ambient cue",
-          "• <code>/status</code> - View SQLite database stats & snooze status",
-          "• <code>/queue</code> - List pending reading queue items",
-          "• <code>/snooze &lt;hours&gt;</code> - Pause ambient reminders for X hours",
-          "• <code>/unsnooze</code> - Resume ambient reminders immediately",
-          "• <code>/recent</code> - Show last 3 logged interactions",
-          "• <code>/undo</code> - Undo the last plan change",
-          "• <code>/tracks</code> - Show where each study track pointer is",
+          "🗓 <b>How the day works</b>",
+          "• 21:30 — how today went + tomorrow's plan. Change it, or say <b>ok</b>.",
+          "• 23:00 — tomorrow locks itself if you said nothing.",
+          "• Morning — say <b>up</b> (or send anything) and you get today's plan. Otherwise it comes at 09:30 (weekends 10:30).",
+          "",
+          "📋 <b>Plan</b>",
+          "• <code>/plan</code> · <code>/plan tomorrow</code> - See a day",
+          "• <code>/up</code> - Today's plan now · <code>/lock</code> - Lock tomorrow now",
+          "• <code>/office tue thu</code> - Your office days this week (others are remote)",
+          "• <code>/undo</code> - Undo the last change",
+          "",
+          "📚 <b>Study &amp; reading</b>",
+          "• <code>/tracks</code> - Where each study track is",
           "• <code>/books</code> - What you're reading and what to pick next",
-          "• <code>/book add|start|keep|hold|done|drop</code> - Manage the shelf by id or title (drop takes a reason)",
-          "• <code>/inbox</code> - Messages I wasn't sure about (<code>/inbox done &lt;id&gt;</code> to clear one)",
+          "• <code>/book add|start|keep|hold|done|drop</code> - Manage the shelf by id or title",
+          "",
+          "⏰ <b>Reminders &amp; other</b>",
+          "• <code>/remind &lt;minutes&gt; &lt;text&gt;</code> · <code>/reminders</code>",
+          "• <code>/inbox</code> - Messages I wasn't sure about (<code>/inbox done &lt;id&gt;</code>)",
+          "• <code>/snooze &lt;hours&gt;</code> · <code>/unsnooze</code> - Pause my messages",
+          "• <code>/jobs</code> · <code>/testcue evening|lock|morning</code> · <code>/status</code> · <code>/queue</code> · <code>/recent</code>",
           "",
           "💬 <b>Or just say it</b> (text or voice):",
-          "• <i>finished the 100 page ML book</i> · <i>drop Sapiens, boring</i> · <i>pause DDIA</i>",
-          "• <i>remind me at 6:30 pm to play ball</i> · <i>remind me in 45 minutes to stretch</i>",
-          "• <i>did 3 DSA problems</i> · <i>knee hurts, go easy on legs</i>",
-          "If I'm unsure I save it to /inbox and change nothing.",
-          "",
-          "💡 <i>Tip: Send any URL to queue it.</i>",
+          "• <i>done with gym</i> · <i>skip reading today</i> · <i>add call mom tomorrow</i> · <i>move DSA to Saturday</i>",
+          "• <i>travelling Fri to Sun</i> · <i>down with a fever</i> · <i>feeling low today</i>",
+          "• <i>finished the 100 page ML book</i> · <i>drop Sapiens, boring</i> · <i>did 3 DSA problems</i>",
+          "• <i>remind me at 6:30 pm to play ball</i> · <i>knee hurts, go easy on legs</i>",
+          "If I'm unsure I save it to /inbox and change nothing. Send a URL to queue it.",
         ].join("\n");
         await telegram.sendMessage(chatId, helpMessage);
         break;
@@ -498,13 +659,13 @@ Total queued articles: <b>${count}</b>`
         const reason = args.slice(1).join(" ") || "User requested snooze";
         const untilMs = this.setSnooze(hours, reason);
         const untilDate = new Date(untilMs).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" });
-        await telegram.sendMessage(chatId, `😴 <b>Snoozed!</b> Ambient cues paused until <b>${untilDate} IST</b> (${hours}h).`);
+        await telegram.sendMessage(chatId, `😴 <b>Snoozed!</b> My messages paused until <b>${untilDate} IST</b> (${hours}h).`);
         break;
       }
 
       case "/unsnooze": {
         this.clearSnooze();
-        await telegram.sendMessage(chatId, "🔔 <b>Snooze cleared!</b> Ambient cues resumed.");
+        await telegram.sendMessage(chatId, "🔔 <b>Snooze cleared!</b> My messages are back on.");
         break;
       }
 
@@ -560,44 +721,70 @@ Total queued articles: <b>${count}</b>`
         break;
       }
 
-      case "/cues": {
-        const snooze = this.getSnoozeStatus();
-        const snoozeStr = snooze.snoozed
-          ? `⏸️ <b>Snoozed until:</b> ${snooze.until}`
-          : "▶️ <b>Active</b>";
+      case "/plan": {
+        const db = doDb(this.ctx);
+        const today = dayKey(Date.now());
+        const which = (args[0] ?? "").toLowerCase();
+        const date = which === "tomorrow" || which === "tmrw" ? addDays(today, 1) : /^\d{4}-\d{2}-\d{2}$/.test(which) ? which : today;
+        if (!loadDayRow(db, date) && date > today) ensureDraft(db, date, Date.now());
+        await telegram.sendMessage(chatId, renderPlan(db, date));
+        break;
+      }
 
-        const lines = [
-          "⏰ <b>Scheduled Daily Ambient Cues (IST)</b>",
-          "",
-          "• <b>08:15 IST</b> — Morning Focus & Serendipity Read (<code>morningCue</code>)",
-          "• <b>17:00 IST</b> — Commute Reading Cue (<code>commuteCue</code>)",
-          "• <b>21:30 IST</b> — Evening Synthesis & Daily Summary (<code>eveningSynthesis</code>)",
-          "",
-          `• <b>Snooze Status:</b> ${snoozeStr}`,
-          "",
-          "💡 <i>To test right now: <code>/testcue morning</code>, <code>/testcue commute</code>, or <code>/testcue evening</code></i>",
-        ];
-        await telegram.sendMessage(chatId, lines.join("\n"));
+      case "/up": {
+        await this.sendMorning(telegram, chatId, "manual");
+        break;
+      }
+
+      case "/lock": {
+        const tomorrow = addDays(dayKey(Date.now()), 1);
+        const changed = lockDay(doDb(this.ctx), tomorrow, "user", Date.now());
+        await telegram.sendMessage(chatId, changed ? `🔒 Locked ${dateLabel(tomorrow)}.` : `${dateLabel(tomorrow)} is already locked.`);
+        break;
+      }
+
+      case "/office": {
+        // "/office tue thu": those days (this week, or next week once they've passed) are office days.
+        const idx = args.filter(Boolean).map((a) => WEEKDAY_NAMES.findIndex((w) => w.toLowerCase() === a.slice(0, 3).toLowerCase()));
+        if (idx.length === 0 || idx.some((i) => i < 0)) {
+          await telegram.sendMessage(chatId, "Usage: <code>/office tue thu</code> (the days you'll be in the office)");
+          break;
+        }
+        const today = dayKey(Date.now());
+        const dates = idx.map((w) => addDays(today, (w - weekdayIndex(today) + 7) % 7));
+        try {
+          const r = this.applyPlanOp({ type: "set_place", dates, place: "OFFICE" }, { source: "telegram" });
+          const tomorrow = addDays(today, 1);
+          if (loadDayRow(doDb(this.ctx), tomorrow)?.status === "draft") ensureDraft(doDb(this.ctx), tomorrow, Date.now());
+          await telegram.sendMessage(chatId, `🏢 ${escapeHtml(r.summary)}\n<i>Other days stay remote. /undo to reverse</i>`);
+        } catch (err) {
+          if (!(err instanceof OpError)) throw err;
+          await telegram.sendMessage(chatId, `⚠️ ${escapeHtml(err.message)}`);
+        }
+        break;
+      }
+
+      case "/jobs": {
+        const lines = (await this.listSchedules({ type: "scheduled" }))
+          .filter((sch) => (Object.values(JOB_CALLBACK) as string[]).includes(sch.callback))
+          .sort((x, y) => x.time - y.time)
+          .map((sch) => `• <b>${sch.callback}</b> — ${new Date(sch.time * 1000).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })} IST`);
+        const snooze = this.getSnoozeStatus();
+        await telegram.sendMessage(
+          chatId,
+          `⏰ <b>Day-loop jobs</b>\n${lines.join("\n") || "none scheduled"}${snooze.snoozed ? `\n\n⏸️ Snoozed until ${snooze.until}` : ""}\n\n<i>Test now: /testcue evening | lock | morning</i>`,
+        );
         break;
       }
 
       case "/testcue": {
         const target = (args[0] ?? "").toLowerCase();
-        if (target === "morning") {
-          await telegram.sendMessage(chatId, "🧪 <i>Triggering test morning cue...</i>");
-          await this.morningCue("manual-test");
-        } else if (target === "commute") {
-          await telegram.sendMessage(chatId, "🧪 <i>Triggering test commute cue...</i>");
-          await this.commuteCue("manual-test");
-        } else if (target === "evening") {
-          await telegram.sendMessage(chatId, "🧪 <i>Triggering test evening synthesis...</i>");
-          await this.eveningSynthesis("manual-test");
-        } else {
-          await telegram.sendMessage(
-            chatId,
-            "⚠️ <b>Usage:</b> <code>/testcue &lt;morning|commute|evening&gt;</code>"
-          );
-        }
+        if (target === "evening") await this.jobEvening("manual-test");
+        else if (target === "lock") {
+          await this.jobLock("manual-test");
+          await telegram.sendMessage(chatId, "🔒 Ran the lock job. /plan tomorrow");
+        } else if (target === "morning") await this.sendMorning(telegram, chatId, "manual");
+        else await telegram.sendMessage(chatId, "⚠️ <b>Usage:</b> <code>/testcue evening|lock|morning</code>");
         break;
       }
 
@@ -615,140 +802,6 @@ Total queued articles: <b>${count}</b>`
    */
   private isCurrentlySnoozed(): boolean {
     return this.getSnoozeStatus().snoozed;
-  }
-
-  // ─── Ambient Cue Handlers ────────────────────────────────────────────────────
-
-  /**
-   * 08:15 IST daily — sends daily focus + a serendipitous reading queue item.
-   * Invoked by Agents SDK cron scheduler.
-   */
-  async morningCue(_payload: string): Promise<void> {
-    if (this.isCurrentlySnoozed()) {
-      console.log("[morningCue] Skipped — snooze active");
-      return;
-    }
-
-    const telegram = new TelegramClient(this.env.TELEGRAM_BOT_TOKEN);
-    const chatId = this.env.USER_TELEGRAM_CHAT_ID;
-    if (!chatId) return;
-
-    const items = this.getReadingQueue("queued", 1);
-    const stats = this.getStats();
-
-    const parts: string[] = [
-      "☀️ <b>Good morning! Here's your morning brief.</b>",
-      "",
-    ];
-
-    if (items.length > 0) {
-      const item = items[0];
-      const label = item.category ? `[${item.category}]` : "";
-      const title = item.title ?? item.url;
-      parts.push(`📖 <b>Serendipity Read ${label}:</b>`);
-      parts.push(`<a href="${item.url}">${title}</a>`);
-      if (item.estimated_minutes) parts.push(`⏱ ~${item.estimated_minutes} min read`);
-      // Mark as served
-      this.sql`UPDATE reading_queue SET status = 'served' WHERE id = ${item.id}`;
-    } else {
-      parts.push("📭 Reading queue is empty — drop a link today!");
-    }
-
-    parts.push("");
-    parts.push(`🗂 <b>Today's stats:</b> ${stats.totalWorkouts} workouts · ${stats.totalLogs} interactions logged`);
-    parts.push("");
-    parts.push("<i>Reply with a text or voice memo to log workouts, thoughts, or use /help.</i>");
-
-    this.logInteraction("system_cron", "morning_cue_fired");
-    await telegram.sendMessage(chatId, parts.join("\n"));
-  }
-
-  /**
-   * 17:00 IST daily — serves the next unread item from the reading queue.
-   * Invoked by Agents SDK cron scheduler.
-   */
-  async commuteCue(_payload: string): Promise<void> {
-    if (this.isCurrentlySnoozed()) {
-      console.log("[commuteCue] Skipped — snooze active");
-      return;
-    }
-
-    const telegram = new TelegramClient(this.env.TELEGRAM_BOT_TOKEN);
-    const chatId = this.env.USER_TELEGRAM_CHAT_ID;
-    if (!chatId) return;
-
-    const items = this.getReadingQueue("queued", 1);
-
-    if (items.length === 0) {
-      await telegram.sendMessage(chatId, "🚌 <b>Commute time!</b> Your reading queue is clear. Drop a link to queue something.");
-      return;
-    }
-
-    const item = items[0];
-    const label = item.category ? ` [${item.category}]` : "";
-    const title = item.title ?? item.url;
-    const mins = item.estimated_minutes ? ` · ⏱ ~${item.estimated_minutes} min` : "";
-
-    // Mark as served
-    this.sql`UPDATE reading_queue SET status = 'served' WHERE id = ${item.id}`;
-    this.logInteraction("system_cron", "commute_cue_fired");
-
-    await telegram.sendMessage(
-      chatId,
-      `🚌 <b>Commute read${label}${mins}:</b>\n\n<a href="${item.url}">${title}</a>`
-    );
-  }
-
-  /**
-   * 21:30 IST daily — pre-filled evening synthesis from today's workout logs & interactions.
-   * Invoked by Agents SDK cron scheduler.
-   */
-  async eveningSynthesis(_payload: string): Promise<void> {
-    if (this.isCurrentlySnoozed()) {
-      console.log("[eveningSynthesis] Skipped — snooze active");
-      return;
-    }
-
-    const telegram = new TelegramClient(this.env.TELEGRAM_BOT_TOKEN);
-    const chatId = this.env.USER_TELEGRAM_CHAT_ID;
-    if (!chatId) return;
-
-    // Query today's workout logs (date = YYYY-MM-DD in IST)
-    const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }); // YYYY-MM-DD
-    const todayWorkouts = this.sql<WorkoutLogRow>` 
-      SELECT id, date, workout_type, exercises_json, notes, created_at
-      FROM workout_logs WHERE date = ${today} ORDER BY id DESC`;
-
-    // Count today's interactions (logged since midnight IST)
-    const todayInteractions = this.sql<{ count: number }>`
-      SELECT COUNT(*) as count FROM interaction_logs
-      WHERE created_at >= ${today}`;
-    const interactionCount = todayInteractions[0]?.count ?? 0;
-
-    const parts: string[] = [
-      "🌙 <b>Evening check-in — here's your day:</b>",
-      "",
-    ];
-
-    if (todayWorkouts.length > 0) {
-      todayWorkouts.forEach((w) => {
-        let exercises: Array<{ name: string; sets: number; reps: number; weight_kg?: number }> = [];
-        try { exercises = JSON.parse(w.exercises_json); } catch {}
-        const exerciseStr = exercises.map((e) =>
-          `${e.name} ${e.sets}x${e.reps}${e.weight_kg ? ` @ ${e.weight_kg}kg` : ""}`
-        ).join(", ");
-        parts.push(`🏋️ <b>${w.workout_type}:</b> ${exerciseStr}`);
-      });
-    } else {
-      parts.push("🏋️ No workout logged today.");
-    }
-
-    parts.push(`💬 ${interactionCount} interaction${interactionCount !== 1 ? "s" : ""} logged today.`);
-    parts.push("");
-    parts.push("<i>Anything to add before closing the day? Reply with a note or voice memo — or send /status to review your full state.</i>");
-
-    this.logInteraction("system_cron", "evening_synthesis_fired");
-    await telegram.sendMessage(chatId, parts.join("\n"));
   }
 
   // ─── Ad-hoc Reminder ────────────────────────────────────────────────────────

@@ -13,6 +13,8 @@ import { parseBookCommand } from "./reading.ts";
 import { ReminderTimeError, resolveDelayMinutes } from "./reminder-time.ts";
 import { buildSnapshot } from "./snapshot.ts";
 import { queryPlan } from "./seed.ts";
+import { resolvePlanItem } from "./day.ts";
+import { addDays, dayKey } from "./time.ts";
 
 export const MIN_CONFIDENCE = 0.6;
 
@@ -24,7 +26,8 @@ export interface WorkoutExercise {
 }
 
 export type Outcome =
-  | { kind: "ops"; ops: Record<string, unknown>[] }
+  /** affects: an override's date range, so the agent can re-plan today/tomorrow even if locked. */
+  | { kind: "ops"; ops: Record<string, unknown>[]; affects?: { from: string; to: string } }
   | { kind: "reminder"; text: string; minutes: number }
   | { kind: "workout"; workout_type: string; exercises: WorkoutExercise[]; notes: string | null }
   | { kind: "snooze"; hours: number; reason: string }
@@ -67,6 +70,20 @@ function oneOf<T extends string>(o: Obj, k: string, allowed: readonly T[]): T {
   return v as T;
 }
 
+/** YYYY-MM-DD, a real date, within [today - 1, today + 60]. */
+function ymd(o: Obj, k: string, nowMs: number): string {
+  const v = str(o, k, 10);
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v);
+  const d = m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])) : null;
+  if (!m || !d || d.getUTCDate() !== +m[3] || d.getUTCMonth() !== +m[2] - 1) throw new ValidationError(`${k} must be a real YYYY-MM-DD date`);
+  const today = dayKey(nowMs);
+  if (v < addDays(today, -1) || v > addDays(today, 60)) throw new ValidationError(`${k} must be between yesterday and 60 days from now`);
+  return v;
+}
+function optYmd(o: Obj, k: string, nowMs: number): string | undefined {
+  return o[k] === undefined || o[k] === null || o[k] === "" ? undefined : ymd(o, k, nowMs);
+}
+
 const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 // ---------------------------------------------------------------------- schemas
@@ -79,8 +96,30 @@ const CLASSIFY_SCHEMA = S(
 );
 
 const READING_ACTIONS = ["add", "start", "keep", "hold", "done", "drop"] as const;
+const PLAN_ACTIONS = ["done", "skip", "add", "move"] as const;
+const ADD_LANES = ["fitness", "study", "reading", "personal"] as const;
+const OVERRIDES = ["TRAVEL", "SICK", "OUT", "LOW_MOOD"] as const;
 
 const EXTRACT_SCHEMAS: Record<Intent, JsonSchema> = {
+  plan: S(
+    {
+      action: { type: "string", enum: [...PLAN_ACTIONS] },
+      ref: { type: "string", description: "done/skip/move: the item as the user named it" },
+      title: { type: "string", description: "add: the task" },
+      lane: { type: "string", enum: [...ADD_LANES] },
+      date: { type: "string", description: "YYYY-MM-DD" },
+    },
+    ["action"],
+  ),
+  override: S(
+    {
+      override_type: { type: "string", enum: [...OVERRIDES] },
+      start_date: { type: "string", description: "YYYY-MM-DD" },
+      end_date: { type: "string", description: "YYYY-MM-DD" },
+      note: { type: "string" },
+    },
+    ["override_type", "start_date", "end_date"],
+  ),
   reading: S(
     {
       action: { type: "string", enum: [...READING_ACTIONS] },
@@ -126,6 +165,47 @@ const EXTRACT_SCHEMAS: Record<Intent, JsonSchema> = {
 
 /** Each lane: validate the model's answer (throws ValidationError -> one retry), then map it to an outcome. */
 const LANE_HANDLERS: Record<Intent, (db: Db, nowMs: number) => { validate: (raw: unknown) => unknown; map: (v: any) => Outcome }> = {
+  plan: (db, nowMs) => ({
+    validate: (raw) => {
+      const o = asObj(raw);
+      const action = oneOf(o, "action", PLAN_ACTIONS);
+      const v = {
+        action,
+        ref: action === "add" ? undefined : str(o, "ref", 120),
+        title: action === "add" ? str(o, "title", 200) : undefined,
+        lane: action === "add" ? (o.lane === undefined || o.lane === null || o.lane === "" ? "personal" : oneOf(o, "lane", ADD_LANES)) : undefined,
+        date: optYmd(o, "date", nowMs),
+      };
+      if (action === "move" && !v.date) throw new ValidationError("date is required for move");
+      return v;
+    },
+    map: (v: { action: string; ref?: string; title?: string; lane?: string; date?: string }): Outcome => {
+      const today = dayKey(nowMs);
+      if (v.action === "add") return { kind: "ops", ops: [{ type: "add_item", date: v.date ?? today, lane: v.lane, title: v.title }] };
+      const where = v.action === "move" ? [today, addDays(today, 1)] : v.date ? [v.date] : [today, addDays(today, 1)];
+      const statuses = v.action === "done" ? ["planned", "skipped"] : ["planned"];
+      const found = resolvePlanItem(db, v.ref!, where, statuses);
+      if ("reply" in found) return { kind: "reply", html: found.reply };
+      if (v.action === "move") return { kind: "ops", ops: [{ type: "move_item", item_id: found.item.id, to_date: v.date }] };
+      return { kind: "ops", ops: [{ type: "set_item_status", item_id: found.item.id, status: v.action === "done" ? "done" : "skipped" }] };
+    },
+  }),
+
+  override: (_db, nowMs) => ({
+    validate: (raw) => {
+      const o = asObj(raw);
+      const start = ymd(o, "start_date", nowMs);
+      const end = ymd(o, "end_date", nowMs);
+      if (end < start) throw new ValidationError("end_date must not be before start_date");
+      return { type: oneOf(o, "override_type", OVERRIDES), start, end, note: optStr(o, "note", 200) };
+    },
+    map: (v: { type: string; start: string; end: string; note?: string }): Outcome => ({
+      kind: "ops",
+      ops: [{ type: "set_override", override_type: v.type, start_date: v.start, end_date: v.end, note: v.note }],
+      affects: { from: v.start, to: v.end },
+    }),
+  }),
+
   reading: (db) => ({
     validate: (raw) => {
       const o = asObj(raw);

@@ -10,7 +10,7 @@ import type { Db, SqlValue } from "./db/db.ts";
 
 // ------------------------------------------------------------------ types
 
-export const LANES = ["fitness", "study", "reading", "career", "guitar"] as const;
+export const LANES = ["fitness", "study", "reading", "career", "guitar", "personal"] as const;
 export const OVERRIDE_TYPES = ["TRAVEL", "SICK", "OUT", "LOW_MOOD"] as const;
 export const ITEM_STATUSES = ["planned", "done", "skipped", "dropped"] as const;
 export const ITEM_SOURCES = ["pattern", "pointer", "user", "minimum"] as const;
@@ -33,6 +33,7 @@ export type Op =
   | { type: "resolve_note"; note_id: number }
   | { type: "advance_pointer"; list_id: string; to_ordinal?: number }
   | { type: "set_config"; key: string; value: string }
+  | { type: "set_place"; dates: string[]; place: "OFFICE" | "REMOTE" }
   | { type: "add_reading"; title: string; author?: string; kind?: string; url?: string; note?: string; slot?: ReadingSlot; shortlist?: boolean }
   | { type: "start_reading"; reading_id: number }
   | { type: "keep_reading"; reading_id: number }
@@ -153,6 +154,11 @@ export function validateOp(input: unknown): Op {
       return { type: "advance_pointer", list_id: str(o, "list_id", 100), to_ordinal: optInt(o, "to_ordinal", 1) };
     case "set_config":
       return { type: "set_config", key: str(o, "key", 100), value: str(o, "value", 500) };
+    case "set_place": {
+      if (!Array.isArray(o.dates) || o.dates.length === 0 || o.dates.length > 14) fail("dates must be 1-14 dates");
+      const dates = o.dates.map((d) => date({ d }, "d"));
+      return { type: "set_place", dates: [...new Set(dates)], place: oneOf(o, "place", ["OFFICE", "REMOTE"] as const) };
+    }
     case "add_reading":
       return {
         type: "add_reading",
@@ -268,6 +274,40 @@ function requireReading(h: HandlerCtx, id: number): Row {
   return r;
 }
 
+/** What finishing a pointer-driven plan item advances: a study pointer, the gym rotation, or a queue article. */
+function completeSource(h: HandlerCtx, item: Row): void {
+  const ref = (item.ref as string | null) ?? "";
+
+  if (item.unit_id !== null && item.unit_id !== undefined) {
+    const unit = h.rec.get("unit", item.unit_id as number);
+    const ptr = unit ? h.rec.get("pointer", unit.list_id as string, "list_id") : null;
+    if (unit && ptr && ptr.ordinal === unit.ordinal) {
+      const total = h.db.all<{ c: number }>("SELECT COUNT(*) AS c FROM unit WHERE list_id = ?", unit.list_id as string)[0].c;
+      h.rec.update("pointer", unit.list_id as string, { ordinal: Math.min((ptr.ordinal as number) + 1, total + 1), updated_at: iso(h.now) }, "list_id");
+    }
+  }
+
+  const rot = /^rotation:([a-z_]+):(\d+)$/.exec(ref);
+  if (rot) {
+    const count = h.db.all<{ c: number }>("SELECT COUNT(*) AS c FROM rotation WHERE lane = ?", rot[1])[0].c;
+    if (count > 0) {
+      const key = `rotation.${rot[1]}`;
+      const next = String((Number(rot[2]) % count) + 1);
+      if (h.rec.get("config", key, "key")) h.rec.update("config", key, { value: next }, "key");
+      else h.rec.insert("config", { key, value: next }, "key");
+    }
+  }
+
+  const rd = /^reading:(\d+)$/.exec(ref);
+  if (rd) {
+    const r = h.rec.get("reading_item", Number(rd[1]));
+    // A queue article is finished by reading it once; a book keeps its own state.
+    if (r && !r.slot && (r.state === "queued" || r.state === "backlog")) {
+      h.rec.update("reading_item", Number(rd[1]), { state: "done", ended_at: iso(h.now) });
+    }
+  }
+}
+
 const HANDLERS: { [K in Op["type"]]: (h: HandlerCtx, op: Extract<Op, { type: K }>) => HandlerResult } = {
   add_item(h, op) {
     if (op.unit_id !== undefined && !h.rec.get("unit", op.unit_id)) throw new OpError(`unit ${op.unit_id} not found`);
@@ -289,14 +329,26 @@ const HANDLERS: { [K in Op["type"]]: (h: HandlerCtx, op: Extract<Op, { type: K }
     const item = requireItem(h, op.item_id);
     h.rec.update("plan_item", op.item_id, { status: op.status });
     touchDay(h, item.date as string);
+    // Finishing an item moves whatever it was drawn from, in the same undoable change.
+    if (op.status === "done" && item.status !== "done") completeSource(h, item);
     return { lane: item.lane as string, refId: op.item_id, summary: `${item.title} → ${op.status}` };
+  },
+
+  set_place(h, op) {
+    for (const day of op.dates) {
+      const plan = h.rec.get("day_plan", day, "date");
+      if (!plan) h.rec.insert("day_plan", { date: day, place: op.place, status: "draft", version: 1 }, "date");
+      else h.rec.update("day_plan", day, { place: op.place, version: (plan.version as number) + 1 }, "date");
+    }
+    return { summary: `${op.place === "OFFICE" ? "In office" : "Remote"}: ${op.dates.join(", ")}` };
   },
 
   move_item(h, op) {
     const item = requireItem(h, op.item_id);
     const from = item.date as string;
     if (from === op.to_date) throw new OpError("item is already on that date");
-    h.rec.update("plan_item", op.item_id, { date: op.to_date, status: "planned" });
+    // Once moved it is the user's item: re-drafting either day must neither delete nor regenerate it.
+    h.rec.update("plan_item", op.item_id, { date: op.to_date, status: "planned", source: "user" });
     touchDay(h, from);
     touchDay(h, op.to_date);
     return { lane: item.lane as string, refId: op.item_id, summary: `Moved ${item.title}: ${from} → ${op.to_date}` };

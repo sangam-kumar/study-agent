@@ -8,12 +8,14 @@ You only translate the user's message into the requested JSON. You never decide 
 If the message is unclear, lower your confidence instead of guessing.
 Be brief.`;
 
-export type Intent = "reading" | "study_done" | "reminder" | "note" | "workout" | "snooze" | "chat";
-export const INTENTS: readonly Intent[] = ["reading", "study_done", "reminder", "note", "workout", "snooze", "chat"];
+export type Intent = "plan" | "override" | "reading" | "study_done" | "reminder" | "note" | "workout" | "snooze" | "chat";
+export const INTENTS: readonly Intent[] = ["plan", "override", "reading", "study_done", "reminder", "note", "workout", "snooze", "chat"];
 
 export const CLASSIFY_CARD = `Classify the message into exactly one intent:
+- plan: mark an item of today's or tomorrow's plan done or skipped, add a task to a day, or move an item to another day ("done with gym", "skip reading today", "add call mom tomorrow", "move DSA to Saturday").
+- override: the user's circumstances change for some days: travelling, sick, out for the day, feeling low ("travelling Fri to Sun", "down with fever", "out all day tomorrow", "feeling low today").
 - reading: add, start, keep, pause, finish or drop a book/article ("done with the ML book", "drop Sapiens, boring", "add Deep Work by Cal Newport").
-- study_done: finished study work (a DSA problem, a system-design topic, a frontier-lab unit).
+- study_done: finished study work that is NOT simply today's planned item (e.g. "did 3 DSA problems").
 - reminder: remind me / alert me at a time or after a delay.
 - note: a short thing to remember for a few days ("my knee hurts, go easy on legs").
 - workout: exercises with sets/reps/weights.
@@ -22,6 +24,15 @@ export const CLASSIFY_CARD = `Classify the message into exactly one intent:
 Give a confidence from 0 to 1.`;
 
 export const LANE_CARDS: Record<Intent, string> = {
+  plan: `Plan edit. action: done | skip | add | move.
+ref: for done/skip/move, a word or part of the title of the plan item as the user said it ("gym", "DSA", "reading", "two sum").
+title: for add, the task in a few words. lane: for add, one of fitness, study, reading, personal.
+date: YYYY-MM-DD. For add and move it is the target day. For done/skip it is the day the item is on (default today). Use the calendar below.`,
+
+  override: `Change of circumstances for one or more days.
+override_type: TRAVEL (travelling) | SICK (ill) | OUT (out for the day, busy) | LOW_MOOD (low energy or mood).
+start_date and end_date: YYYY-MM-DD, inclusive, from the calendar below. A single day has start = end. note: a few words, optional.`,
+
   reading: `Reading shelf. Extract one action on one book or article.
 action: add | start | keep | hold | done | drop.
 ref: a distinctive part of the title as the user said it, or the title for add. Use the shelf below to expand vague words ("the ML book").

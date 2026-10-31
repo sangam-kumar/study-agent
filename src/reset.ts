@@ -1,4 +1,4 @@
-// Clearing test data without touching the schema, the seeded plan content, or the daily cue schedules.
+// Clearing test data without touching the schema, the seeded plan content, or the day-loop job schedules.
 //
 // Scopes are explicit and composable so nothing real is deleted by accident:
 //

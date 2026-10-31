@@ -27,6 +27,8 @@ import { DEFAULT_TIMES, JOB_CALLBACK, JOB_KINDS, nextRun } from "./jobs.ts";
 import type { JobTimes } from "./jobs.ts";
 import { WEEKDAY_NAMES, addDays, dateLabel, dayKey, istWallToMs, weekdayIndex } from "./time.ts";
 import { formatIn, formatWhen } from "./reminder-time.ts";
+import { GitHubClient } from "./github/client.ts";
+import { mirrorDays } from "./mirror.ts";
 
 /** Processed-update rows older than this are pruned; replays beyond it are not a concern. */
 const PROCESSED_UPDATE_TTL_MS = 7 * 24 * 3600 * 1000;
@@ -344,6 +346,7 @@ Total queued articles: <b>${count}</b>`
     if (/^(ok|okay|ok lock|lock|lock it|looks good|sounds good|good|fine|yes|yep|👍)[.!]?$/i.test(text.trim()) && eventExists(db, "evening_recap", today) && loadDayRow(db, tomorrow)?.status === "draft") {
       lockDay(db, tomorrow, "user", nowMs);
       await telegram.sendMessage(chatId, `🔒 Locked ${dateLabel(tomorrow)}. See you in the morning.`);
+      await this.mirror();
       return;
     }
 
@@ -460,6 +463,29 @@ Total queued articles: <b>${count}</b>`
     return chatId ? { telegram: new TelegramClient(this.env.TELEGRAM_BOT_TOKEN), chatId } : null;
   }
 
+  /**
+   * Mirrors yesterday, today and tomorrow into study-repo's daily notes (only days that changed).
+   * Never throws: a failure is logged and retried at the next lock. Returns a one-line summary.
+   */
+  async mirror(): Promise<string> {
+    const token = this.env.GITHUB_PAT;
+    const repo = this.env.GITHUB_REPO as string | undefined;
+    if (!token || !repo) return "Mirror is off: GITHUB_PAT or GITHUB_REPO is not set.";
+    const db = doDb(this.ctx);
+    const nowMs = Date.now();
+    const today = dayKey(nowMs);
+    try {
+      const gh = new GitHubClient(token, repo, getConfig(db, "mirror_branch", "master"));
+      const r = await mirrorDays(db, gh, [addDays(today, -1), today, addDays(today, 1)], nowMs);
+      if (r.committed) recordEvent(db, "mirror", null, { paths: r.paths, sha: r.sha }, nowMs);
+      return r.committed ? `Wrote ${r.paths.length} daily note(s) to study-repo: ${r.paths.join(", ")}` : "Daily notes are up to date.";
+    } catch (err) {
+      console.error("mirror failed:", err);
+      recordEvent(db, "mirror_failed", null, { error: String(err).slice(0, 300) }, nowMs);
+      return `Couldn't write to study-repo (will retry at the next lock): ${String(err).slice(0, 160)}`;
+    }
+  }
+
   /** 21:30: recap today, draft tomorrow. */
   async jobEvening(_payload: string): Promise<void> {
     try {
@@ -483,6 +509,7 @@ Total queued articles: <b>${count}</b>`
     try {
       const nowMs = Date.now();
       lockDay(doDb(this.ctx), addDays(dayKey(nowMs), 1), "auto", nowMs);
+      await this.mirror();
     } catch (err) {
       console.error("jobLock failed:", err);
     } finally {
@@ -529,6 +556,7 @@ Total queued articles: <b>${count}</b>`
           "• <code>/up</code> - Today's plan now · <code>/lock</code> - Lock tomorrow now",
           "• <code>/office tue thu</code> - Your office days this week (others are remote)",
           "• <code>/undo</code> - Undo the last change",
+          "• <code>/mirror</code> - Write yesterday/today/tomorrow to study-repo now (also happens at every lock)",
           "",
           "📚 <b>Study &amp; reading</b>",
           "• <code>/tracks</code> - Where each study track is",
@@ -739,6 +767,7 @@ Total queued articles: <b>${count}</b>`
         const tomorrow = addDays(dayKey(Date.now()), 1);
         const changed = lockDay(doDb(this.ctx), tomorrow, "user", Date.now());
         await telegram.sendMessage(chatId, changed ? `🔒 Locked ${dateLabel(tomorrow)}.` : `${dateLabel(tomorrow)} is already locked.`);
+        if (changed) await this.mirror();
         break;
       }
 
@@ -760,6 +789,11 @@ Total queued articles: <b>${count}</b>`
           if (!(err instanceof OpError)) throw err;
           await telegram.sendMessage(chatId, `⚠️ ${escapeHtml(err.message)}`);
         }
+        break;
+      }
+
+      case "/mirror": {
+        await telegram.sendMessage(chatId, `📝 ${escapeHtml(await this.mirror())}`);
         break;
       }
 

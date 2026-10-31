@@ -213,9 +213,9 @@ flowchart TD
 ### Phase 12: Repo mirror (unparks Phase 5) [M1]
 * **Phase Doc:** `docs/phase-12-mirror.md`
 * **Sub-steps:**
-  - [ ] 12.1: GitHub client: read/write file with sha; one commit per lock for `daily/<y>/<m>/<date>.md`.
-  - [ ] 12.2: Regenerate `study/reading/reading-queue.md` from the reading items.
-  - [ ] 12.3: Failure policy: a commit failure never blocks the Telegram reply; retried at the next lock.
+  - [x] 12.1: GitHub client: read/write file with sha; one commit per lock for `daily/<y>/<m>/<date>.md`.
+  - [ ] 12.2 (deferred — see docs/phase-12-mirror.md §5): Regenerate `study/reading/reading-queue.md` from the reading items.
+  - [x] 12.3: Failure policy: a commit failure never blocks the Telegram reply; retried at the next lock.
 * **Check:** a locked day produces exactly one commit; re-lock with no change produces none.
 
 ### Phase 13: Fitness lane [W9]

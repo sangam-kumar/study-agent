@@ -69,9 +69,11 @@ const cases: Case[] = [
   { group: "reading", text: "pause DDIA for now", expect: "hold_reading DDIA", check: isOp("hold_reading", { reading_id: ddia }) },
   { group: "reading", text: "add Deep Work by Cal Newport to my books", expect: "add_reading + author", check: isOp("add_reading", { title: has("deep work"), author: has("newport") }) },
   // reminders (now = Mon 10:00 IST)
-  { group: "reminder", text: "remind me to play ball at 6:30 pm today", expect: "reminder 510 min", check: (o) => o.kind === "reminder" && o.minutes === 510 && /ball/i.test(o.text), workers: true },
-  { group: "reminder", text: "remind me in 45 minutes to stretch", expect: "reminder 45 min", check: (o) => o.kind === "reminder" && o.minutes === 45 },
-  { group: "reminder", text: "remind me tomorrow at 7am to call the bank", expect: "reminder 1260 min", check: (o) => o.kind === "reminder" && o.minutes === 1260 },
+  { group: "reminder", text: "remind me to play ball at 6:30 pm today", expect: "reminder today 18:30", check: (o) => o.kind === "reminder" && o.dueMs === istWallToMs(TODAY, "18:30") && /ball/i.test(o.text), workers: true },
+  { group: "reminder", text: "remind me in 45 minutes to stretch", expect: "reminder in 45 min", check: (o) => o.kind === "reminder" && o.dueMs === nowMs + 45 * 60_000 },
+  { group: "reminder", text: "remind me tomorrow at 7am to call the bank", expect: "reminder Tue 07:00", check: (o) => o.kind === "reminder" && o.dueMs === istWallToMs(TOMORROW, "07:00") },
+  { group: "reminder", text: "remind me on Friday at 4pm to submit the application", expect: "reminder Fri 6 Nov 16:00", check: (o) => o.kind === "reminder" && o.dueMs === istWallToMs("2026-11-06", "16:00") },
+  { group: "reminder", text: "remind me on 15 Nov at 6pm to pay rent", expect: "reminder Sun 15 Nov 18:00", check: (o) => o.kind === "reminder" && o.dueMs === istWallToMs("2026-11-15", "18:00") },
   // plan edits (today: gym day)
   { group: "plan", text: "done with gym", expect: "gym item done", check: isOp("set_item_status", { item_id: item(TODAY, (t) => t.startsWith("Gym")), status: "done" }), workers: true },
   { group: "plan", text: "skip reading today", expect: "reading item skipped", check: isOp("set_item_status", { item_id: item(TODAY, (t) => t.startsWith("Read")), status: "skipped" }) },

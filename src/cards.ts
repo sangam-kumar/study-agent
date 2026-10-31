@@ -44,7 +44,7 @@ list_id must be one of the ids shown. If you cannot tell which list, lower your 
 
   reminder: `Reminder. Extract reminder_text (what to be reminded of, without the time words).
 For a delay ("in 30 minutes", "in 2 hours") set delay_minutes and leave at_time and on_date empty.
-For a clock time ("at 6:30 pm") set at_time as 24h HH:MM in IST, set delay_minutes to 0, and set on_date (YYYY-MM-DD) only if a day was named (today, tomorrow, Friday, a date). Never convert a clock time into minutes yourself.`,
+For a clock time ("at 6:30 pm") set at_time as 24h HH:MM in IST, set delay_minutes to 0, and set on_date (YYYY-MM-DD, from the calendar below) only if a day was named (today, tomorrow, Friday, a date). Never convert a clock time into minutes yourself.`,
 
   note: `Short-lived note. text: the thing to remember, one sentence. ttl_days: how many days it stays relevant (1-30; default 7).`,
 

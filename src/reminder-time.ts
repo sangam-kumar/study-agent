@@ -18,6 +18,39 @@ export class ReminderTimeError extends Error {
   }
 }
 
+const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** "6:30 pm" in IST. */
+function clock(ms: number): string {
+  const d = new Date(ms + IST_OFFSET_MS);
+  const h = d.getUTCHours();
+  return `${h % 12 === 0 ? 12 : h % 12}:${String(d.getUTCMinutes()).padStart(2, "0")} ${h < 12 ? "am" : "pm"}`;
+}
+
+/** "today 6:30 pm", "tomorrow 7:00 am", "Fri 6 Nov, 4:00 pm" (IST calendar days). */
+export function formatWhen(dueMs: number, nowMs: number): string {
+  const dayOf = (ms: number) => Math.floor((ms + IST_OFFSET_MS) / 86_400_000);
+  const diff = dayOf(dueMs) - dayOf(nowMs);
+  if (diff === 0) return `today ${clock(dueMs)}`;
+  if (diff === 1) return `tomorrow ${clock(dueMs)}`;
+  const d = new Date(dueMs + IST_OFFSET_MS);
+  return `${DAYS[d.getUTCDay()]} ${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}, ${clock(dueMs)}`;
+}
+
+/** "in 45 min", "in 4 h 30 min", "in 3 days". */
+export function formatIn(dueMs: number, nowMs: number): string {
+  const min = Math.max(1, Math.round((dueMs - nowMs) / 60_000));
+  if (min < 60) return `in ${min} min`;
+  if (min < 24 * 60) {
+    const h = Math.floor(min / 60);
+    const m = min % 60;
+    return `in ${h} h${m ? ` ${m} min` : ""}`;
+  }
+  const days = Math.round(min / 1440);
+  return `in ${days} day${days === 1 ? "" : "s"}`;
+}
+
 /** Current date and time in IST for the LLM prompt, e.g. "Friday, 2026-10-30 14:30 IST". */
 export function istNowLabel(nowMs: number): string {
   const d = new Date(nowMs + IST_OFFSET_MS);

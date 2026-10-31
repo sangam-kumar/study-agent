@@ -26,6 +26,7 @@ import {
 import { DEFAULT_TIMES, JOB_CALLBACK, JOB_KINDS, nextRun } from "./jobs.ts";
 import type { JobTimes } from "./jobs.ts";
 import { WEEKDAY_NAMES, addDays, dateLabel, dayKey, istWallToMs, weekdayIndex } from "./time.ts";
+import { formatIn, formatWhen } from "./reminder-time.ts";
 
 /** Processed-update rows older than this are pruned; replays beyond it are not a concern. */
 const PROCESSED_UPDATE_TTL_MS = 7 * 24 * 3600 * 1000;
@@ -117,7 +118,7 @@ export class StudyAgent extends Agent<Env> {
 
       let alarms: number | undefined;
       if (scopes.includes("reminders")) {
-        const pending = (await this.listSchedules({ type: "delayed" })).filter((s) => s.callback === "triggerReminder");
+        const pending = (await this.listSchedules()).filter((s) => s.callback === "triggerReminder");
         alarms = pending.length;
         if (!dryRun) for (const s of pending) await this.cancelSchedule(s.id);
       }
@@ -365,7 +366,7 @@ Total queued articles: <b>${count}</b>`
         return;
       }
       case "reminder":
-        await telegram.sendMessage(chatId, `${await this.scheduleAdhocReminder(outcome.minutes, outcome.text)}${heard}`);
+        await telegram.sendMessage(chatId, `${await this.scheduleReminderAt(outcome.dueMs, outcome.text)}${heard}`);
         return;
       case "workout": {
         // Legacy v1 table until the fitness lane (Phase 13). Day boundary is 03:00 IST.
@@ -535,7 +536,7 @@ Total queued articles: <b>${count}</b>`
           "• <code>/book add|start|keep|hold|done|drop</code> - Manage the shelf by id or title",
           "",
           "⏰ <b>Reminders &amp; other</b>",
-          "• <code>/remind &lt;minutes&gt; &lt;text&gt;</code> · <code>/reminders</code>",
+          "• <code>/remind &lt;minutes&gt; &lt;text&gt;</code> · <code>/reminders</code> (for a date and time, just say it)",
           "• <code>/inbox</code> - Messages I wasn't sure about (<code>/inbox done &lt;id&gt;</code>)",
           "• <code>/snooze &lt;hours&gt;</code> · <code>/unsnooze</code> - Pause my messages",
           "• <code>/jobs</code> · <code>/testcue evening|lock|morning</code> · <code>/status</code> · <code>/queue</code> · <code>/recent</code>",
@@ -544,7 +545,8 @@ Total queued articles: <b>${count}</b>`
           "• <i>done with gym</i> · <i>skip reading today</i> · <i>add call mom tomorrow</i> · <i>move DSA to Saturday</i>",
           "• <i>travelling Fri to Sun</i> · <i>down with a fever</i> · <i>feeling low today</i>",
           "• <i>finished the 100 page ML book</i> · <i>drop Sapiens, boring</i> · <i>did 3 DSA problems</i>",
-          "• <i>remind me at 6:30 pm to play ball</i> · <i>knee hurts, go easy on legs</i>",
+          "• <i>remind me at 6:30 pm to play ball</i> · <i>remind me Friday at 4pm to submit the form</i>",
+          "• <i>knee hurts, go easy on legs</i>",
           "If I'm unsure I save it to /inbox and change nothing. Send a URL to queue it.",
         ].join("\n");
         await telegram.sendMessage(chatId, helpMessage);
@@ -681,29 +683,26 @@ Total queued articles: <b>${count}</b>`
           return;
         }
 
-        const confirmMsg = await this.scheduleAdhocReminder(minutes, reminderText);
+        const confirmMsg = await this.scheduleReminderAt(Date.now() + minutes * 60_000, reminderText);
         await telegram.sendMessage(chatId, confirmMsg);
         break;
       }
 
       case "/reminders": {
         const pending = this.sql<ReminderRow>`SELECT id, reminder_type, trigger_at, payload_json, status, created_at 
-                                              FROM reminders WHERE status = 'pending' ORDER BY trigger_at ASC LIMIT 5`;
+                                              FROM reminders WHERE status = 'pending' ORDER BY trigger_at ASC LIMIT 10`;
         if (pending.length === 0) {
           await telegram.sendMessage(chatId, "📭 No pending reminders.");
           return;
         }
 
+        const nowMs = Date.now();
         const lines = pending.map((r, i) => {
-          const timeStr = new Date(r.trigger_at).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" });
           let note = "Reminder";
           try {
-            if (r.payload_json) {
-              const parsed = JSON.parse(r.payload_json);
-              note = parsed.text ?? note;
-            }
+            if (r.payload_json) note = JSON.parse(r.payload_json).text ?? note;
           } catch {}
-          return `${i + 1}. [${timeStr} IST] <i>${note}</i>`;
+          return `${i + 1}. <b>${formatWhen(r.trigger_at, nowMs)}</b> — ${escapeHtml(note)} <i>(${formatIn(r.trigger_at, nowMs)})</i>`;
         });
         await telegram.sendMessage(chatId, `⏰ <b>Upcoming Reminders:</b>\n\n${lines.join("\n")}`);
         break;
@@ -807,48 +806,38 @@ Total queued articles: <b>${count}</b>`
   // ─── Ad-hoc Reminder ────────────────────────────────────────────────────────
 
   /**
-   * Schedule an ad-hoc reminder via Agents SDK alarm scheduler and insert into SQLite.
-   * Returns a formatted confirmation string.
+   * Stores a reminder and schedules it at its exact due instant (not "N minutes from whenever the
+   * model finished"). Returns the confirmation text.
    */
-  async scheduleAdhocReminder(minutes: number, reminderText: string): Promise<string> {
-    const validMinutes = isNaN(minutes) || minutes <= 0 ? 5 : minutes;
-    const delaySeconds = Math.max(1, Math.round(validMinutes * 60));
-    const triggerAtMs = Date.now() + delaySeconds * 1000;
-
-    // 1. Insert into SQLite table
+  async scheduleReminderAt(dueMs: number, text: string): Promise<string> {
+    const nowMs = Date.now();
+    const due = Math.max(Math.round(dueMs), nowMs + 1000);
     this.sql`INSERT INTO reminders (reminder_type, trigger_at, payload_json, status)
-             VALUES ('adhoc', ${triggerAtMs}, ${JSON.stringify({ text: reminderText })}, 'pending')`;
+             VALUES ('adhoc', ${due}, ${JSON.stringify({ text })}, 'pending')`;
     const reminderId = this.sql<{ id: number }>`SELECT last_insert_rowid() as id`[0]?.id;
-
-    // 2. Schedule via Agents SDK
-    await this.schedule(delaySeconds, "triggerReminder", JSON.stringify({ reminderId, text: reminderText }));
-
-    // 3. Formatted confirmation string
-    const triggerTimeStr = new Date(triggerAtMs).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" });
-    return `⏰ <b>Reminder scheduled!</b>\n\n• <b>Message:</b> "${reminderText}"\n• <b>Fires at:</b> ${triggerTimeStr} IST (${validMinutes} min)`;
+    await this.schedule(new Date(due), "triggerReminder", JSON.stringify({ reminderId, text }));
+    return `⏰ <b>${escapeHtml(text)}</b>\n${formatWhen(due, nowMs)} <i>(${formatIn(due, nowMs)})</i>`;
   }
 
   /**
-   * Invoked by Agents SDK scheduler when a reminder alarm fires.
+   * Invoked by the scheduler when a reminder is due. It is marked sent only after Telegram accepts
+   * it; a failed send throws, so the scheduler retries instead of silently dropping it.
    */
   async triggerReminder(payloadStr: string): Promise<void> {
+    let payload: { reminderId?: number; text: string };
     try {
-      const payload = JSON.parse(payloadStr) as { reminderId?: number; text: string };
-      const telegram = new TelegramClient(this.env.TELEGRAM_BOT_TOKEN);
-      const chatId = this.env.USER_TELEGRAM_CHAT_ID;
-
-      if (payload.reminderId) {
-        this.sql`UPDATE reminders SET status = 'dispatched' WHERE id = ${payload.reminderId}`;
-      }
-
-      if (chatId) {
-        await telegram.sendMessage(
-          chatId,
-          `⏰ <b>Reminder:</b>\n\n${payload.text}`
-        );
-      }
-    } catch (err) {
-      console.error("Error triggering reminder:", err);
+      payload = JSON.parse(payloadStr);
+    } catch {
+      console.error("Unreadable reminder payload:", payloadStr);
+      return;
     }
+    if (payload.reminderId) {
+      const row = this.sql<{ status: string }>`SELECT status FROM reminders WHERE id = ${payload.reminderId}`[0];
+      if (!row || row.status !== "pending") return; // cleared, cancelled or already sent
+    }
+    const chatId = this.env.USER_TELEGRAM_CHAT_ID;
+    if (!chatId) return;
+    await new TelegramClient(this.env.TELEGRAM_BOT_TOKEN).sendMessage(chatId, `⏰ <b>Reminder:</b>\n\n${escapeHtml(payload.text)}`);
+    if (payload.reminderId) this.sql`UPDATE reminders SET status = 'dispatched' WHERE id = ${payload.reminderId}`;
   }
 }

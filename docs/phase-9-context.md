@@ -34,7 +34,7 @@ map in code ──► ops (reading / study / note) · reminder · workout · sno
 |---|---|---|
 | `reading` | action (add/start/keep/hold/done/drop), title fragment, author, reason | resolves the book (`parseBookCommand`); ambiguous → asks, never guesses |
 | `study_done` | list id, count | checks the id exists, computes the new pointer position, clamps at "finished" |
-| `reminder` | text, `delay_minutes` **or** `at_time` (+ `on_date`) | converts the clock time to minutes (`reminder-time.ts`); a time in the past fails validation |
+| `reminder` | text, `delay_minutes` **or** `at_time` (+ `on_date`, using the calendar in the snapshot) | resolves the exact due instant (`reminder-time.ts`), schedules at that instant; a time in the past or > 60 days away fails validation. The confirmation reads "today 6:30 pm (in 4 h 30 min)" |
 | `note` | text, ttl | clamps the TTL to 1–30 days → `add_note` |
 | `workout` | type, exercises | legacy `workout_logs` insert until Phase 13 (day boundary 03:00 IST) |
 | `snooze` | hours, reason | legacy snooze until Phase 11 |
@@ -81,7 +81,7 @@ npm run live-check -- --workers                       # needs a Cloudflare token
 
 **Findings (31 Oct 2026):**
 
-* `gemini-3.5-flash-lite`: **21/21** after two fixes below. Its free quota took 50+ calls in a row.
+* `gemini-3.5-flash-lite`: **23/23** after the fixes below (incl. "Friday at 4pm" and "15 Nov at 6pm"). Its free quota took 50+ calls in a row.
 * `gemini-2.5-flash` free tier is **20 requests/day per project** (`GenerateRequestsPerDayPerProjectPerModel-FreeTier`). At 2 calls per message that is ~10 messages a day. Hence the model chain: `gemini-3.5-flash-lite,gemini-3.5-flash,gemini-2.5-flash`, then Workers AI. Each model has its own daily quota; a 429 on one simply moves to the next. Quotas reset at midnight Pacific (13:30 IST).
 * `gemini-2.5-flash-lite` is no longer available to new users (404).
 * Fixed: book lookup was a plain substring match, so "the 100 page ml book" missed "The Hundred-Page Machine Learning Book" and "pause DDIA" was ambiguous with the queue line "DDIA - pick a chapter". Lookup now normalises punctuation, matches acronyms and shortenings (ml, 100), and only considers books in a state the action applies to. The reading snapshot also lists the shortlist so the model can expand vague references.

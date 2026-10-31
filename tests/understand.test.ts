@@ -81,14 +81,14 @@ test("reading: add carries the author", async () => {
   assert.deepEqual(out, { kind: "ops", ops: [{ type: "add_reading", title: "Deep Work", author: "Cal Newport" }] });
 });
 
-test("reminder: '6:30 pm today' becomes 240 minutes in code, whatever delay the model guessed", async () => {
+test("reminder: '6:30 pm today' is resolved to 18:30 in code, whatever delay the model guessed", async () => {
   const out = await run(world(), model("reminder", 0.95, { reminder_text: "play ball", delay_minutes: 390, at_time: "18:30", on_date: "2026-10-30" }), "remind me to play ball at 6:30 pm today");
-  assert.deepEqual(out, { kind: "reminder", text: "play ball", minutes: 240 });
+  assert.deepEqual(out, { kind: "reminder", text: "play ball", dueMs: nowMs + 240 * 60_000 });
 });
 
 test("reminder: relative delay passes through", async () => {
   const out = await run(world(), model("reminder", 0.95, { reminder_text: "stretch", delay_minutes: 45, at_time: "", on_date: "" }), "remind me in 45 minutes to stretch");
-  assert.deepEqual(out, { kind: "reminder", text: "stretch", minutes: 45 });
+  assert.deepEqual(out, { kind: "reminder", text: "stretch", dueMs: nowMs + 45 * 60_000 });
 });
 
 test("reminder: a time in the past is rejected, retried, then saved to the inbox", async () => {

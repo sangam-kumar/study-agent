@@ -231,7 +231,15 @@ flowchart TD
 * **Phase Doc:** `docs/phase-14-nudges-weekly.md`
 * **Sub-steps:**
   - [ ] 14.1: Nudge budget (≤3 agent messages/day, quiet 22:30→wake, quiet-after-2-ignored, "pause or resume?").
-  - [ ] 14.2: Reminders v2 — absolute `due_ts`, repeat rule, Done/Snooze/Tomorrow buttons, one repeat then evening recap (extends the v1 `reminders` table).
+  - [~] 14.2: Reminders v2 (extends the v1 `reminders` table).
+    - [x] Absolute due time: scheduled at the exact instant (`scheduleReminderAt`), not "N minutes after the model answered".
+    - [x] Any date and time up to 60 days ("tomorrow 7am", "Friday 4pm", "15 Nov 6pm"); the reminder extractor gets the calendar.
+    - [x] Readable confirmation and `/reminders` list: "today 6:30 pm (in 4 h 30 min)", "Fri 6 Nov, 4:00 pm (in 5 days)".
+    - [x] Marked sent only after Telegram accepts it; a failed send throws so the scheduler retries. Reset cancels both delayed and dated reminder alarms.
+    - [ ] Repeat rule ("every Monday 9am").
+    - [ ] Date-only tasks ("submit by Friday") shown in the morning brief and evening recap instead of a ping.
+    - [ ] Done / Snooze 1h / Tomorrow buttons; one repeat after 30 min if unanswered, then "still open" in the evening recap.
+    - [ ] Cancel / edit a reminder ("cancel the bank reminder"); duplicate check.
   - [ ] 14.3: Sunday weekly summary from events (targets, sleep average, office-day question).
   - [ ] 14.4: `jot` + `progress` intents; `study/notes/<slug>.md` projection.
 * **Check:** see reform-plan §6 acceptance table.

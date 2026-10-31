@@ -7,7 +7,7 @@ import { istNowLabel } from "./reminder-time.ts";
 import { currentReading, pickCandidates } from "./reading.ts";
 import { queryPlan } from "./seed.ts";
 import { loadItems } from "./day.ts";
-import { addDays, dateLabel, dayKey } from "./time.ts";
+import { addDays, calendarDate, dateLabel, dayKey } from "./time.ts";
 
 const clip = (s: string, n = 90) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
@@ -30,13 +30,15 @@ export function buildSnapshot(db: Db, intent: Intent, nowMs: number): string {
   );
   if (notes.length > 0) lines.push(`Notes: ${notes.map((n) => clip(n.text)).join(" | ")}`);
 
-  if (intent === "plan" || intent === "override") {
-    const days = Array.from({ length: 8 }, (_, i) => addDays(today, i));
+  if (intent === "plan" || intent === "override" || intent === "reminder") {
+    // Reminders use the real calendar date; plans use the 03:00 day (at 01:00 "today" is still yesterday's plan).
+    const base = intent === "reminder" ? calendarDate(nowMs) : today;
+    const days = Array.from({ length: 8 }, (_, i) => addDays(base, i));
     lines.push(`Calendar: ${days.map((d, i) => `${i === 0 ? "today " : i === 1 ? "tomorrow " : ""}${dateLabel(d)} = ${d}`).join("; ")}.`);
     if (intent === "plan") {
       for (const d of days.slice(0, 2)) {
         const items = loadItems(db, d);
-        if (items.length > 0) lines.push(`${d === today ? "Today" : "Tomorrow"}: ${items.map((i) => `${clip(i.title, 50)} [${i.status}]`).join("; ")}.`);
+        if (items.length > 0) lines.push(`${d === base ? "Today" : "Tomorrow"}: ${items.map((i) => `${clip(i.title, 50)} [${i.status}]`).join("; ")}.`);
       }
     }
   }

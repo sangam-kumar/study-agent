@@ -28,3 +28,20 @@ test("relative delay passes through; junk is rejected", () => {
 test("IST label", () => {
   assert.equal(istNowLabel(now), "Friday, 2026-10-30 14:30 IST");
 });
+
+test("confirmations read like times, not minute counts", async () => {
+  const { formatIn, formatWhen } = await import("../src/reminder-time.ts");
+  // now = Fri 30 Oct 14:30 IST
+  const at = (y: number, mo: number, d: number, h: number, mi: number) => Date.UTC(y, mo - 1, d, h, mi) - 330 * 60_000;
+  assert.equal(formatWhen(at(2026, 10, 30, 18, 30), now), "today 6:30 pm");
+  assert.equal(formatWhen(at(2026, 10, 31, 7, 0), now), "tomorrow 7:00 am");
+  assert.equal(formatWhen(at(2026, 11, 6, 16, 0), now), "Fri 6 Nov, 4:00 pm");
+  assert.equal(formatWhen(at(2026, 10, 31, 0, 5), now), "tomorrow 12:05 am");
+  assert.equal(formatWhen(at(2026, 10, 30, 12, 0), now), "today 12:00 pm");
+  assert.equal(formatIn(now + 45 * 60_000, now), "in 45 min");
+  assert.equal(formatIn(now + 270 * 60_000, now), "in 4 h 30 min");
+  assert.equal(formatIn(now + 120 * 60_000, now), "in 2 h");
+  assert.equal(formatIn(now + 3 * 1440 * 60_000, now), "in 3 days");
+  assert.equal(formatIn(now + 1440 * 60_000, now), "in 1 day");
+  assert.equal(formatIn(now + 10_000, now), "in 1 min");
+});

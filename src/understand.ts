@@ -28,7 +28,8 @@ export interface WorkoutExercise {
 export type Outcome =
   /** affects: an override's date range, so the agent can re-plan today/tomorrow even if locked. */
   | { kind: "ops"; ops: Record<string, unknown>[]; affects?: { from: string; to: string } }
-  | { kind: "reminder"; text: string; minutes: number }
+  /** dueMs: the exact instant, so model latency never shifts the time. */
+  | { kind: "reminder"; text: string; dueMs: number }
   | { kind: "workout"; workout_type: string; exercises: WorkoutExercise[]; notes: string | null }
   | { kind: "snooze"; hours: number; reason: string }
   | { kind: "reply"; html: string }
@@ -248,13 +249,13 @@ const LANE_HANDLERS: Record<Intent, (db: Db, nowMs: number) => { validate: (raw:
       try {
         const minutes = resolveDelayMinutes({ delay_minutes: delay, at_time: optStr(o, "at_time", 10), on_date: optStr(o, "on_date", 10) }, nowMs);
         if (minutes > 60 * 24 * 60) throw new ValidationError("that is more than 60 days away");
-        return { text, minutes };
+        return { text, dueMs: Math.round(nowMs + minutes * 60_000) };
       } catch (e) {
         if (e instanceof ReminderTimeError) throw new ValidationError(e.message);
         throw e;
       }
     },
-    map: (v: { text: string; minutes: number }): Outcome => ({ kind: "reminder", text: v.text, minutes: v.minutes }),
+    map: (v: { text: string; dueMs: number }): Outcome => ({ kind: "reminder", text: v.text, dueMs: v.dueMs }),
   }),
 
   note: () => ({

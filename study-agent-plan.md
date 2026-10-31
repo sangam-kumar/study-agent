@@ -184,10 +184,10 @@ flowchart TD
 ### Phase 9: Inference interface, base card, lane cards, snapshot [W2]
 * **Phase Doc:** `docs/phase-9-context.md`
 * **Sub-steps:**
-  - [ ] 9.1: `infer(task, schema, inputs)` over the existing Gemini/Workers AI providers; failover on 429; model names stay config.
-  - [ ] 9.2: Base card (~500 tokens) + lane cards (fitness, study, reading, reminders) as static strings.
-  - [ ] 9.3: `snapshot.ts` — today's plan, active overrides, unexpired notes, last N events for the lane.
-  - [ ] 9.4: Replace `parseText` with classify → lane extractor → validate (one retry) → apply; low confidence → `inbox`.
+  - [x] 9.1: `infer(task, schema, inputs)` over the existing Gemini/Workers AI providers; failover on 429; model names stay config.
+  - [x] 9.2: Base card (~500 tokens) + lane cards (fitness, study, reading, reminders) as static strings.
+  - [x] 9.3: `snapshot.ts` — today's plan, active overrides, unexpired notes, last N events for the lane.
+  - [x] 9.4: Replace `parseText` with classify → lane extractor → validate (one retry) → apply; low confidence → `inbox`.
 * **Check:** context packet < 1k tokens for a normal message; forced Gemini 429 falls through to Workers AI.
 
 ### Phase 10: Day loop — evening lock, wake-triggered morning [W3, W4]
@@ -238,6 +238,9 @@ flowchart TD
 
 ### Order of execution
 P7 → P8 → P9 → P10 (**start living on it here**) → P12 → P11 → P13 → P14, then 14 days untouched. P12 is pulled forward because it closes the commit gap as a side effect.
+
+### Definition of done (every phase)
+Typecheck and tests green, docs updated, and **`/help` lists every new command or behaviour** the phase adds.
 
 ### Housekeeping (not a phase)
 - [ ] Replace the stale `study-agent-spec.md` / `study-agent-context.md` copies in this repo with a one-line pointer to the study-repo spec, so there is one source of truth.

@@ -178,7 +178,7 @@ flowchart TD
   - [~] 8.2: **Script written 2026-10-26** (`study-repo/scripts/seed_study.py` → `seed/study.json`; review of the JSON still pending, LLM split proposals not yet run). Study seed script — DSA from `study/problem-lists/dsa-sheet.md`; system design from `big-tech-prep-plan.md` + `system-design-curriculum.md`; frontier lab from `frontier-lab.md`. All pointers at unit 1. Prior `problems/` solutions attached as `ref` only. LLM may *propose* splits of oversized units into the JSON for review.
   - [x] 8.1b: `POST /admin/reset` — scoped, dry-run by default, cancels matching reminder alarms (added so v1 test data can be cleared; see `docs/phase-8-seed.md` §7).
   - [x] 8.3: Reading + config seed (`reading-queue.md` → items, library → `backlog`, targets incl. sleep 7/8, guitar lane `paused`).
-  - [~] 8.4: Gym structure done in `seed/config.json` (pattern, rotation, targets). Exercise catalog + Oct sessions from `life/gym-tracking.md` deferred to Phase 13 (needs workout tables).
+  - [x] 8.4: Gym structure in `seed/config.json` (pattern, rotation, targets). Exercise catalog + Oct sessions from `life/gym-tracking.md` done in Phase 13 (`kind=fitness` import).
 * **Check:** loads into an empty DB; `query_plan` returns unit 1 for every track; no unit starts done.
 
 ### Phase 9: Inference interface, base card, lane cards, snapshot [W2]
@@ -221,10 +221,10 @@ flowchart TD
 ### Phase 13: Fitness lane [W9]
 * **Phase Doc:** `docs/phase-13-fitness.md`
 * **Sub-steps:**
-  - [ ] 13.1: `workout_session` (UNIQUE date) / `session_exercise` / `session_set`; migrate v1 `workout_logs`.
-  - [ ] 13.2: Set-notation parser (`kg × reps` for dumbbell/machine; single weight, duration or `BW` for activity; `(1m)` rest; failure marker).
-  - [ ] 13.3: Chunk ops (`ensure_session`, `add_sets`, `amend_set`, …), duplicate → one-tap ask, version rebase.
-  - [ ] 13.4: Rotation pointer advances on a logged lift; protein number at evening; weekly targets in the recap.
+  - [x] 13.1: `workout_session` (UNIQUE date) / `session_exercise` / `session_set` / `exercise_catalog` / `metric_log`; migrate v1 `workout_logs`.
+  - [x] 13.2: Set-notation parser (`kg × reps` for dumbbell/machine; single weight, duration or `BW` for activity; `(1m)` rest; failure marker).
+  - [x] 13.3: One `log_workout` op per chunk (append / replace), `log_metric`; repeat → ask ("add again"); messages already serialised, so no version rebase (docs/phase-13-fitness.md §2).
+  - [x] 13.4: Rotation pointer advances on a logged lift (split detected); protein number at evening; weekly targets in the recap; `/gym`, `/lift`.
 * **Check:** two voice chunks 1 s apart → one session, no lost sets; skip Wed → Thu offers it again; late chunk reopens the same-day session.
 
 ### Phase 14: Nudges, reminders v2, weekly, jots [W6, W7, W8, J1]

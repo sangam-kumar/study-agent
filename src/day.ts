@@ -9,6 +9,7 @@ import type { Db } from "./db/db.ts";
 import { bedtimeFor, draftDay } from "./plan.ts";
 import type { DayKind, DraftDay, OverrideKind, Place, PlanInput, PlanReading, PlanUnit } from "./plan.ts";
 import { currentReading } from "./reading.ts";
+import { proteinFor, weeklyFitnessParts } from "./fitness.ts";
 import { queryPlan } from "./seed.ts";
 import { addDays, dateLabel, dayNumber, weekStart, weekdayIndex } from "./time.ts";
 
@@ -208,12 +209,10 @@ export function renderDayBlock(db: Db, date: string): string {
 
 function weeklyLine(db: Db, date: string): string {
   const week = weekStart(date);
-  const lifts = countDone(db, "lane = 'fitness' AND ref LIKE 'rotation:%'", week, date);
-  const floor = db.all<{ floor: number | null }>("SELECT floor FROM target WHERE lane = 'fitness' AND metric = 'lift_sessions' AND period = 'week'")[0]?.floor ?? 2;
   const reads = countDone(db, "lane = 'reading'", week, date);
   const readFloor = db.all<{ floor: number | null }>("SELECT floor FROM target WHERE lane = 'reading' AND metric = 'items' AND period = 'week'")[0]?.floor ?? 1;
-  const parts: string[] = [];
-  if (lifts < floor) parts.push(`lifts ${lifts}/${floor}`);
+  // Only what is below its floor: lifts, mobility (from Thursday), protein average.
+  const parts: string[] = weeklyFitnessParts(db, date);
   if (reads < readFloor && weekdayIndex(date) >= 3) parts.push(`reading ${reads}/${readFloor}`);
   const nights = sleepNights(db, week, date);
   const sleepFloor = db.all<{ floor: number | null }>("SELECT floor FROM target WHERE metric = 'sleep_h_avg' AND period = 'week'")[0]?.floor ?? 7;
@@ -244,6 +243,8 @@ export function renderEvening(db: Db, today: string): string {
   const lines = [`🌙 <b>${dateLabel(today)}</b>`, recap];
   const weekly = weeklyLine(db, today);
   if (weekly) lines.push(`<i>${weekly}</i>`);
+  const protein = proteinFor(db, today);
+  lines.push(protein === null ? "🥩 Protein today? Reply e.g. <b>protein 110</b>." : `🥩 Protein ${protein} g`);
   lines.push("", `<b>Tomorrow — ${dateLabel(tomorrow)}</b>`, renderDayBlock(db, tomorrow));
   const bed = bedtimeLine(db, tomorrow);
   if (bed) lines.push("", bed);

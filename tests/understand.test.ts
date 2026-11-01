@@ -119,9 +119,33 @@ test("note: ttl is clamped to 1..30 days", async () => {
   assert.deepEqual(out, { kind: "ops", ops: [{ type: "add_note", text: "knee hurts", ttl_days: 30 }] });
 });
 
-test("workout and snooze go to the legacy handlers with validated fields", async () => {
-  const w = await run(world(), model("workout", 0.9, { workout_type: "Chest", exercises: [{ name: "Flat Bench", sets: 3, reps: 12, weight_kg: 20 }] }), "chest day");
+test("workout: the model writes sets in the notation, code reads them", async () => {
+  const w = await run(world(), model("workout", 0.9, { exercises: [{ name: "Flat Bench", sets: "20x12, 20x12, 22.5x8 F" }], protein_g: 110 }), "chest day");
   assert.equal(w.kind, "workout");
+  if (w.kind !== "workout") return;
+  assert.equal(w.op.date, "2026-10-30");
+  assert.equal(w.op.mode, "append");
+  assert.deepEqual(w.op.exercises[0].sets.map((s) => [s.weight_kg, s.reps, s.kind]), [[20, 12, "working"], [20, 12, "working"], [22.5, 8, "failure"]]);
+  assert.equal(w.protein, 110);
+});
+
+test("workout: sets not in the notation are retried, then the message goes to the inbox", async () => {
+  const m = model("workout", 0.9, { exercises: [{ name: "bench", sets: "three sets of twelve" }] });
+  const w = await run(world(), m, "bench three sets of twelve");
+  assert.equal(w.kind, "inbox");
+  assert.equal(m.extractCalls, 2);
+});
+
+test("workout: a correction is a replace, a named past day sets the date, a future day is refused", async () => {
+  const r = await run(world(), model("workout", 0.9, { exercises: [{ name: "bench", sets: "20x12, 20x10" }], replace: true }), "actually bench was 20x12, 20x10");
+  assert.ok(r.kind === "workout" && r.op.mode === "replace");
+  const y = await run(world(), model("workout", 0.9, { exercises: [{ name: "leg press", sets: "40x15" }], date: "2026-10-29" }), "yesterday leg press 40x15");
+  assert.ok(y.kind === "workout" && y.op.date === "2026-10-29");
+  const future = await run(world(), model("workout", 0.9, { exercises: [{ name: "leg press", sets: "40x15" }], date: "2026-11-02" }), "leg press monday");
+  assert.equal(future.kind, "inbox");
+});
+
+test("snooze goes to its handler with validated fields", async () => {
   const s = await run(world(), model("snooze", 0.9, { reason: "busy" }), "quiet for a bit");
   assert.deepEqual(s, { kind: "snooze", hours: 2, reason: "busy" });
 });

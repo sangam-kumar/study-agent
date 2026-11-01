@@ -5,7 +5,6 @@ import {
   InteractionLogRow,
   ReadingQueueRow,
   ReminderRow,
-  WorkoutLogRow,
 } from "./db/schema";
 import { buildBackends, transcribe } from "./ai/backends.ts";
 import { addToInbox, understand } from "./understand.ts";
@@ -30,6 +29,10 @@ import { WEEKDAY_NAMES, addDays, dateLabel, dayKey, istWallToMs, weekdayIndex } 
 import { formatIn, formatWhen } from "./reminder-time.ts";
 import { GitHubClient } from "./github/client.ts";
 import { mirrorDays } from "./mirror.ts";
+import {
+  closeOpenSessions, findRepeat, importGymLog, parseChatWorkout, parseProtein, renderGymWeek, renderLiftHistory, renderSession,
+} from "./fitness.ts";
+import type { LogWorkoutOp } from "./fitness.ts";
 
 /** Processed-update rows older than this are pruned; replays beyond it are not a concern. */
 const PROCESSED_UPDATE_TTL_MS = 7 * 24 * 3600 * 1000;
@@ -143,7 +146,13 @@ export class StudyAgent extends Agent<Env> {
       if (kind === "study") return { ok: true, report: loadStudySeed(db, body) };
       if (kind === "config") return { ok: true, report: loadConfigSeed(db, body) };
       if (kind === "reading") return { ok: true, report: loadReadingSeed(db, body) };
-      return { ok: false, error: `unknown seed kind: ${kind} (supported: study, config, reading)` };
+      if (kind === "fitness") {
+        // The body is life/gym-tracking.md as text (index.ts wraps it as { markdown }).
+        const md = (body as { markdown?: unknown } | null)?.markdown;
+        if (typeof md !== "string" || !md.trim()) return { ok: false, error: "fitness seed needs the markdown of life/gym-tracking.md as the body" };
+        return { ok: true, report: importGymLog(db, md, Date.now()) };
+      }
+      return { ok: false, error: `unknown seed kind: ${kind} (supported: study, config, reading, fitness)` };
     } catch (err) {
       if (err instanceof SeedError) return { ok: false, error: err.message };
       console.error("Seed load failed:", err);
@@ -226,7 +235,7 @@ export class StudyAgent extends Agent<Env> {
   getStats() {
     const totalLogs = this.sql<{ count: number }>`SELECT COUNT(*) as count FROM interaction_logs`[0]?.count ?? 0;
     const queuedReading = this.sql<{ count: number }>`SELECT COUNT(*) as count FROM reading_queue WHERE status = 'queued'`[0]?.count ?? 0;
-    const totalWorkouts = this.sql<{ count: number }>`SELECT COUNT(*) as count FROM workout_logs`[0]?.count ?? 0;
+    const totalWorkouts = this.sql<{ count: number }>`SELECT COUNT(*) as count FROM workout_session`[0]?.count ?? 0;
     const snooze = this.getSnoozeStatus();
 
     return {
@@ -365,6 +374,30 @@ Total queued articles: <b>${count}</b>`
       return;
     }
 
+    // "add again" after a repeat was held back.
+    if (/^(?:add (?:it |them )?again|log (?:it |them )?anyway|again)[.!]?$/i.test(text.trim())) {
+      const pending = this.takePendingWorkout(nowMs);
+      if (pending) {
+        await telegram.sendMessage(chatId, this.logWorkout(pending, text, { allowRepeat: true }));
+        return;
+      }
+    }
+
+    // "protein 110": one number a day, no model needed.
+    const protein = parseProtein(text);
+    if (protein !== null) {
+      this.applyPlanOp({ type: "log_metric", date: today, metric: "protein_g", value: protein }, { source: "telegram", raw: text });
+      await telegram.sendMessage(chatId, `🥩 Protein today: <b>${protein} g</b>\n<i>/undo to reverse · /gym for the week</i>`);
+      return;
+    }
+
+    // Sets typed in the notation ("bench 20x15, 22.5x12"): read by code, no model.
+    const typed = parseChatWorkout(db, text, nowMs);
+    if (typed) {
+      await telegram.sendMessage(chatId, this.logWorkout(typed, text));
+      return;
+    }
+
     const outcome = await understand({ db, backends: buildBackends(this.env), nowMs }, text);
     const heard = source === "telegram_voice" ? `\n\n<i>Heard: "${escapeHtml(text)}"</i>` : "";
 
@@ -387,18 +420,12 @@ Total queued articles: <b>${count}</b>`
         await telegram.sendMessage(chatId, `${await this.scheduleReminderAt(outcome.dueMs, outcome.text)}${heard}`);
         return;
       case "workout": {
-        // Legacy v1 table until the fitness lane (Phase 13). Day boundary is 03:00 IST.
-        const day = new Date(nowMs + (330 - 180) * 60_000).toISOString().slice(0, 10);
-        this.sql`INSERT INTO workout_logs (date, workout_type, exercises_json, notes)
-                 VALUES (${day}, ${outcome.workout_type}, ${JSON.stringify(outcome.exercises)}, ${outcome.notes})`;
-        // A logged lift completes today's gym item, which moves the rotation on.
-        const gym = loadItems(db, today).find((i) => i.lane === "fitness" && i.status === "planned" && i.ref?.startsWith("rotation:"));
-        if (gym) this.applyPlanOp({ type: "set_item_status", item_id: gym.id, status: "done" }, { source: "telegram", raw: text });
-        const list = outcome.exercises
-          .map((e) => `• <b>${escapeHtml(e.name)}</b>: ${e.sets}x${e.reps}${e.weight_kg ? ` @ ${e.weight_kg}kg` : ""}`)
-          .join("\n");
-        const note = outcome.notes ? `\n\n<i>Note: ${escapeHtml(outcome.notes)}</i>` : "";
-        await telegram.sendMessage(chatId, `🏋️ <b>Workout Logged (${escapeHtml(outcome.workout_type)})</b>\n\n${list}${note}${heard}`);
+        let extra = "";
+        if (outcome.protein) {
+          this.applyPlanOp({ type: "log_metric", date: outcome.op.date, metric: "protein_g", value: outcome.protein }, { source: "telegram", raw: text });
+          extra = `\n🥩 Protein: ${outcome.protein} g`;
+        }
+        await telegram.sendMessage(chatId, `${this.logWorkout(outcome.op, text)}${extra}${heard}`);
         return;
       }
       case "snooze": {
@@ -414,6 +441,45 @@ Total queued articles: <b>${count}</b>`
         addToInbox(db, text, nowMs);
         await telegram.sendMessage(chatId, `🗂 Saved to your inbox — ${escapeHtml(outcome.reason)}. Nothing was changed.${heard}`);
         return;
+    }
+  }
+
+  // --- Fitness (fitness.ts reads and renders, the log_workout op writes) ---
+
+  /**
+   * Applies one chunk and replies with the day's session. The same sets sent again within 15 minutes
+   * are held back with a question ("add again" logs them) instead of being counted twice.
+   */
+  private logWorkout(op: LogWorkoutOp, raw: string, opts: { allowRepeat?: boolean } = {}): string {
+    const db = doDb(this.ctx);
+    const nowMs = Date.now();
+    const firstAt = opts.allowRepeat ? null : findRepeat(db, op, nowMs);
+    if (firstAt) {
+      this.setBotConfig("fitness_pending", JSON.stringify({ op, until: nowMs + 15 * 60_000 }));
+      const at = new Date(firstAt).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: "numeric", minute: "2-digit" });
+      return `🤔 That's the same as what you sent at ${at}, so I didn't add it again.\nSay <b>add again</b> if you really did those sets twice.`;
+    }
+    let summary: string;
+    try {
+      summary = this.applyPlanOp(op, { source: "telegram", raw }).summary;
+    } catch (err) {
+      if (!(err instanceof OpError)) throw err;
+      return `⚠️ ${escapeHtml(err.message)}`;
+    }
+    // The rotation may have moved on: tomorrow's draft should offer the next split.
+    this.replanAfterChange(dayKey(nowMs));
+    return `✅ ${escapeHtml(summary)}\n\n${renderSession(db, op.date)}\n<i>/undo to reverse</i>`;
+  }
+
+  private takePendingWorkout(nowMs: number): LogWorkoutOp | null {
+    const raw = this.getBotConfig("fitness_pending");
+    if (!raw) return null;
+    this.setBotConfig("fitness_pending", "");
+    try {
+      const p = JSON.parse(raw) as { op: LogWorkoutOp; until: number };
+      return p.until > nowMs ? p.op : null;
+    } catch {
+      return null;
     }
   }
 
@@ -563,7 +629,9 @@ Total queued articles: <b>${count}</b>`
   async jobLock(_payload: string): Promise<void> {
     try {
       const nowMs = Date.now();
-      lockDay(doDb(this.ctx), addDays(dayKey(nowMs), 1), "auto", nowMs);
+      const db = doDb(this.ctx);
+      lockDay(db, addDays(dayKey(nowMs), 1), "auto", nowMs);
+      closeOpenSessions(db, dayKey(nowMs), nowMs);
       await this.mirror();
     } catch (err) {
       console.error("jobLock failed:", err);
@@ -613,6 +681,13 @@ Total queued articles: <b>${count}</b>`
           "• <code>/sleep</code> - Last 7 nights. Say <b>good night</b> at bedtime and <b>up</b> when you wake.",
           "• <code>/undo</code> - Undo the last change",
           "• <code>/mirror</code> - Write yesterday/today/tomorrow to study-repo now (also happens at every lock)",
+          "",
+          "🏋️ <b>Gym</b>",
+          "• Type sets as you go: <i>bench 20x15, 22.5x12, 25x8F</i> (kg × reps; <i>BWx20</i>, <i>30s</i>, <i>7kg</i>, <i>15 reps</i>; <i>(1m)</i> = rest). Voice works too.",
+          "• Several messages make one session for the day. Fix one: <i>actually bench was 22.5x10</i>. Logging ticks off the gym item and moves the split on.",
+          "• <code>/gym</code> - This week (lifts, mobility, protein) and the last session · <code>/gym yesterday</code>",
+          "• <code>/lift bench</code> - Last few times and your best set",
+          "• <i>protein 110</i> or <code>/protein 110</code> - Today's protein (I ask in the evening)",
           "",
           "📚 <b>Study &amp; reading</b>",
           "• <code>/tracks</code> - Where each study track is",
@@ -716,7 +791,7 @@ Total queued articles: <b>${count}</b>`
           "",
           `• <b>Total Interactions:</b> ${stats.totalLogs}`,
           `• <b>Reading Queue:</b> ${stats.queuedReading} pending`,
-          `• <b>Workout Logs:</b> ${stats.totalWorkouts}`,
+          `• <b>Workouts:</b> ${stats.totalWorkouts}`,
           `• <b>Snooze Status:</b>\n  ${snoozeInfo}`,
         ].join("\n");
         await telegram.sendMessage(chatId, statusMessage);
@@ -835,6 +910,39 @@ Total queued articles: <b>${count}</b>`
           break;
         }
         await telegram.sendMessage(chatId, this.applyOfficeDays(days));
+        break;
+      }
+
+      case "/gym": {
+        const db = doDb(this.ctx);
+        const today = dayKey(Date.now());
+        const when = (args[0] ?? "").toLowerCase();
+        if (when === "yesterday" || when === "today") {
+          await telegram.sendMessage(chatId, renderSession(db, when === "today" ? today : addDays(today, -1)));
+          break;
+        }
+        await telegram.sendMessage(chatId, renderGymWeek(db, today));
+        break;
+      }
+
+      case "/lift": {
+        const name = args.join(" ").trim();
+        if (!name) {
+          await telegram.sendMessage(chatId, "Usage: <code>/lift bench</code> (the last few times and your best set)");
+          break;
+        }
+        await telegram.sendMessage(chatId, renderLiftHistory(doDb(this.ctx), name));
+        break;
+      }
+
+      case "/protein": {
+        const grams = Number(args[0]);
+        if (!Number.isFinite(grams) || grams <= 0 || grams > 400) {
+          await telegram.sendMessage(chatId, "Usage: <code>/protein 110</code> (grams today). You can also just say <i>protein 110</i>.");
+          break;
+        }
+        this.applyPlanOp({ type: "log_metric", date: dayKey(Date.now()), metric: "protein_g", value: Math.round(grams) }, { source: "telegram" });
+        await telegram.sendMessage(chatId, `🥩 Protein today: <b>${Math.round(grams)} g</b>`);
         break;
       }
 

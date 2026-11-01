@@ -15,22 +15,19 @@ import { buildSnapshot } from "./snapshot.ts";
 import { queryPlan } from "./seed.ts";
 import { resolvePlanItem } from "./day.ts";
 import { addDays, dayKey } from "./time.ts";
+import { findExercise } from "./exercises.ts";
+import { parseSets } from "./sets.ts";
+import type { LogWorkoutOp } from "./fitness.ts";
 
 export const MIN_CONFIDENCE = 0.6;
-
-export interface WorkoutExercise {
-  name: string;
-  sets: number;
-  reps: number;
-  weight_kg?: number;
-}
 
 export type Outcome =
   /** affects: an override's date range, so the agent can re-plan today/tomorrow even if locked. */
   | { kind: "ops"; ops: Record<string, unknown>[]; affects?: { from: string; to: string } }
   /** dueMs: the exact instant, so model latency never shifts the time. */
   | { kind: "reminder"; text: string; dueMs: number }
-  | { kind: "workout"; workout_type: string; exercises: WorkoutExercise[]; notes: string | null }
+  /** protein: grams, when the same message mentioned it. */
+  | { kind: "workout"; op: LogWorkoutOp; protein?: number }
   | { kind: "snooze"; hours: number; reason: string }
   | { kind: "reply"; html: string }
   | { kind: "inbox"; reason: string };
@@ -146,17 +143,23 @@ const EXTRACT_SCHEMAS: Record<Intent, JsonSchema> = {
   note: S({ text: { type: "string" }, ttl_days: { type: "number", description: "1-30" } }, ["text"]),
   workout: S(
     {
-      workout_type: { type: "string" },
       exercises: {
         type: "array",
         items: S(
-          { name: { type: "string" }, sets: { type: "number" }, reps: { type: "number" }, weight_kg: { type: "number" } },
-          ["name", "sets", "reps"],
+          {
+            name: { type: "string", description: "the exercise as said" },
+            sets: { type: "string", description: 'every set, comma separated, e.g. "20x15, 22.5x12, 25x8 F"' },
+          },
+          ["name", "sets"],
         ),
       },
+      date: { type: "string", description: "YYYY-MM-DD only if a past day was named (yesterday), else empty" },
+      replace: { type: "boolean", description: "true only when correcting sets already logged" },
+      pain: { type: "string" },
       notes: { type: "string" },
+      protein_g: { type: "number", description: "grams of protein if mentioned" },
     },
-    ["workout_type", "exercises"],
+    ["exercises"],
   ),
   snooze: S({ duration_hours: { type: "number" }, reason: { type: "string" } }, ["reason"]),
   chat: S({ reply: { type: "string" } }, ["reply"]),
@@ -267,22 +270,30 @@ const LANE_HANDLERS: Record<Intent, (db: Db, nowMs: number) => { validate: (raw:
     map: (v: { text: string; ttl_days: number }): Outcome => ({ kind: "ops", ops: [{ type: "add_note", text: v.text, ttl_days: v.ttl_days }] }),
   }),
 
-  workout: () => ({
+  workout: (db, nowMs) => ({
     validate: (raw) => {
       const o = asObj(raw);
       if (!Array.isArray(o.exercises) || o.exercises.length === 0) throw new ValidationError("exercises must be a non-empty array");
-      const exercises = o.exercises.map((e, i): WorkoutExercise => {
+      // The model writes sets in the notation; code reads them, so a bad set is retried, never guessed.
+      const exercises = o.exercises.map((e) => {
         const eo = asObj(e);
-        return {
-          name: str(eo, "name", 100),
-          sets: num(eo, "sets", 0, 100),
-          reps: num(eo, "reps", 0, 1000),
-          weight_kg: typeof eo.weight_kg === "number" && eo.weight_kg > 0 ? eo.weight_kg : undefined,
-        };
+        const name = str(eo, "name", 100);
+        const text = str(eo, "sets", 600);
+        const sets = parseSets(text, findExercise(db, name)?.kind ?? "weighted");
+        if (!sets) throw new ValidationError(`sets for ${name} are not in the notation ("20x15, 22.5x12"): ${text}`);
+        return { name, sets };
       });
-      return { workout_type: str(o, "workout_type", 60), exercises, notes: optStr(o, "notes", 500) ?? null };
+      const today = dayKey(nowMs);
+      const date = optStr(o, "date", 10) ?? today;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date > today || date < addDays(today, -7)) throw new ValidationError("date must be today or one of the last 7 days");
+      const protein = typeof o.protein_g === "number" && o.protein_g > 0 && o.protein_g <= 400 ? Math.round(o.protein_g) : undefined;
+      return { date, exercises, replace: o.replace === true, pain: optStr(o, "pain", 200), notes: optStr(o, "notes", 500), protein };
     },
-    map: (v: { workout_type: string; exercises: WorkoutExercise[]; notes: string | null }): Outcome => ({ kind: "workout", ...v }),
+    map: (v: { date: string; exercises: LogWorkoutOp["exercises"]; replace: boolean; pain?: string; notes?: string; protein?: number }): Outcome => ({
+      kind: "workout",
+      op: { type: "log_workout", date: v.date, mode: v.replace ? "replace" : "append", exercises: v.exercises, pain: v.pain, notes: v.notes },
+      protein: v.protein,
+    }),
   }),
 
   snooze: () => ({

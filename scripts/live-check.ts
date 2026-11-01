@@ -87,7 +87,27 @@ const cases: Case[] = [
   // study, note, workout, snooze, chat, vague
   { group: "study", text: "did 3 DSA problems", expect: "advance dsa to 4", check: isOp("advance_pointer", { list_id: "dsa", to_ordinal: 4 }), workers: true },
   { group: "note", text: "my knee hurts, go easy on legs this week", expect: "add_note", check: isOp("add_note", { text: has("knee") }) },
-  { group: "workout", text: "did chest today: flat bench 3 sets of 12 at 20kg, incline press 3x10 at 15kg", expect: "workout, 2 exercises", check: (o) => o.kind === "workout" && o.exercises.length === 2, workers: true },
+  {
+    group: "workout", text: "did chest today: flat bench 3 sets of 12 at 20kg, incline press 3x10 at 15kg", expect: "2 exercises, 3 × (20 kg × 12) and 3 × (15 kg × 10)", workers: true,
+    check: (o) => o.kind === "workout" && o.op.date === TODAY && o.op.exercises.length === 2
+      && o.op.exercises[0].sets.length === 3 && o.op.exercises[0].sets.every((s) => s.weight_kg === 20 && s.reps === 12)
+      && o.op.exercises[1].sets.every((s) => s.weight_kg === 15 && s.reps === 10),
+  },
+  {
+    group: "workout-voice", text: "lat pulldown twenty five kgs fifteen reps, then twenty five for twelve, then thirty kgs for eight to failure", expect: "25×15, 25×12, 30×8 F",
+    check: (o) => o.kind === "workout" && o.op.exercises.length === 1
+      && JSON.stringify(o.op.exercises[0].sets.map((s) => [s.weight_kg, s.reps])) === "[[25,15],[25,12],[30,8]]" && o.op.exercises[0].sets[2].kind === "failure",
+  },
+  {
+    group: "workout", text: "yesterday legs: calf raises bodyweight 3 sets of 20, deep squat hold 30 seconds twice; left knee felt a bit off", expect: "yesterday, BW×20 ×3, 2 × 30s, pain noted",
+    check: (o) => o.kind === "workout" && o.op.date === "2026-11-01" && !!o.op.pain && /knee/i.test(o.op.pain)
+      && o.op.exercises.some((e) => e.sets.length === 3 && e.sets.every((s) => s.reps === 20 && (s.bw || s.weight_kg === null)))
+      && o.op.exercises.some((e) => e.sets.length === 2 && e.sets.every((s) => s.duration_s === 30)),
+  },
+  {
+    group: "workout", text: "done with shoulders, lateral raise 5x15 three times, and had about 110g protein", expect: "3 sets + protein 110",
+    check: (o) => o.kind === "workout" && o.protein === 110 && o.op.exercises[0].sets.length === 3,
+  },
   { group: "snooze", text: "pause your messages for 3 hours, I'm in a meeting", expect: "snooze 3h", check: (o) => o.kind === "snooze" && o.hours === 3 },
   { group: "chat", text: "hey how's it going", expect: "a reply, nothing changed", check: (o) => o.kind === "reply" },
   { group: "vague", text: "the thing from earlier", expect: "inbox or a question", check: (o) => o.kind === "inbox" || o.kind === "reply", workers: true },
@@ -154,7 +174,7 @@ for (const c of selected) {
   const got = out.kind === "ops" ? JSON.stringify(out.ops) : out.kind === "reply" ? `reply: ${out.html.slice(0, 80)}` : out.kind === "inbox" ? `inbox: ${out.reason}` : JSON.stringify(out);
   const retry = warnings.length ? `
       ${warnings.length} retry/warning: ${warnings[0].replace(/\s+/g, " ").slice(0, 400)}` : "";
-  console.log(`${ok ? "PASS" : "FAIL"}  [${c.group}] "${c.text}"\n      expect ${c.expect}\n      got    ${got.slice(0, 200)}  ${Math.round((Date.now() - started) / 1000)}s${retry}`);
+  console.log(`${ok ? "PASS" : "FAIL"}  [${c.group}] "${c.text}"\n      expect ${c.expect}\n      got    ${ok ? got.slice(0, 200) : got}  ${Math.round((Date.now() - started) / 1000)}s${retry}`);
   if (!ok) fails.push(c.text);
 }
 console.log(`\n${pass}/${selected.length} passed, ${backend.calls} model calls.${fails.length ? `\nFailed: ${fails.map((f) => `"${f}"`).join(", ")}` : ""}`);

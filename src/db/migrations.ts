@@ -1,5 +1,6 @@
 import type { Db } from "./db.ts";
 import { SCHEMA_SQL } from "./schema.ts";
+import { migrateV1Workouts } from "../fitness.ts";
 
 // Product-loop tables (spec §6). All CREATE ... IF NOT EXISTS so a partial run is safe to repeat.
 const V2_SQL = `
@@ -204,10 +205,80 @@ CREATE TABLE IF NOT EXISTS mirror_state (
 );
 `;
 
+// Fitness lane (spec §8): one session per date, built from chunks. Identity is the date, not the message.
+// metric_log holds one number per day and metric (protein), so a correction replaces it and undo restores it.
+const V6_SQL = `
+CREATE TABLE IF NOT EXISTS exercise_catalog (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  canonical_name TEXT NOT NULL UNIQUE,
+  muscle_group TEXT,
+  equipment TEXT,
+  kind TEXT NOT NULL DEFAULT 'weighted' CHECK(kind IN ('weighted','activity','mobility','bodyweight')),
+  aliases_json TEXT NOT NULL DEFAULT '[]',
+  source TEXT NOT NULL DEFAULT 'user'
+);
+
+CREATE TABLE IF NOT EXISTS workout_session (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  date TEXT NOT NULL UNIQUE,
+  title TEXT,
+  kind TEXT NOT NULL DEFAULT 'lift' CHECK(kind IN ('lift','mobility')),
+  status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','closed')),
+  source TEXT NOT NULL DEFAULT 'telegram',
+  energy TEXT,
+  pain_notes TEXT,
+  notes TEXT,
+  version INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  closed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS session_exercise (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER NOT NULL REFERENCES workout_session(id),
+  ordinal INTEGER NOT NULL,
+  exercise_id INTEGER REFERENCES exercise_catalog(id),
+  display_name TEXT NOT NULL,
+  prescribed_json TEXT,
+  status TEXT NOT NULL DEFAULT 'done' CHECK(status IN ('planned','done','partial','skipped')),
+  notes TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_session_exercise_session ON session_exercise(session_id, ordinal);
+CREATE INDEX IF NOT EXISTS idx_session_exercise_exercise ON session_exercise(exercise_id);
+
+CREATE TABLE IF NOT EXISTS session_set (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_exercise_id INTEGER NOT NULL REFERENCES session_exercise(id),
+  set_no INTEGER NOT NULL,
+  reps INTEGER,
+  weight_kg REAL,
+  duration_s INTEGER,
+  rest_s INTEGER,
+  rpe REAL,
+  bw INTEGER NOT NULL DEFAULT 0,
+  kind TEXT NOT NULL DEFAULT 'working' CHECK(kind IN ('warmup','working','drop','failure')),
+  side TEXT,
+  incomplete INTEGER NOT NULL DEFAULT 0,
+  notes TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_session_set_exercise ON session_set(session_exercise_id, set_no);
+
+CREATE TABLE IF NOT EXISTS metric_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  date TEXT NOT NULL,
+  metric TEXT NOT NULL,
+  value REAL NOT NULL,
+  ts TEXT NOT NULL,
+  UNIQUE(date, metric)
+);
+`;
+
 export interface Migration {
   version: number;
   name: string;
   sql: string;
+  /** Data step after the SQL, in the same run (e.g. copying v1 rows into new tables). */
+  run?: (db: Db) => void;
 }
 
 export const MIGRATIONS: Migration[] = [
@@ -216,6 +287,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 3, name: "reading items", sql: V3_SQL },
   { version: 4, name: "optional plan items", sql: V4_SQL },
   { version: 5, name: "repo mirror state", sql: V5_SQL },
+  { version: 6, name: "fitness lane: sessions, exercises, sets, metrics", sql: V6_SQL, run: (db) => void migrateV1Workouts(db) },
 ];
 
 /** Apply any migration not yet recorded. Safe on a database that predates schema_migrations. */
@@ -230,6 +302,7 @@ export function runMigrations(db: Db, now: () => Date = () => new Date()): numbe
   for (const m of MIGRATIONS) {
     if (done.has(m.version)) continue;
     db.exec(m.sql);
+    m.run?.(db);
     db.run("INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)", m.version, m.name, now().toISOString());
     applied.push(m.version);
   }

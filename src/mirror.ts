@@ -8,6 +8,7 @@
 
 import type { Db } from "./db/db.ts";
 import { loadDayRow, loadItems } from "./day.ts";
+import { sessionMarkdown } from "./fitness.ts";
 import type { GitHubClient, CommitResult } from "./github/client.ts";
 import { dateLabel } from "./time.ts";
 
@@ -56,7 +57,10 @@ export function renderDailyBlock(db: Db, date: string): string | null {
     return `- [ ] ${i.title}${mins}${opt}`;
   });
 
-  return [BLOCK_START, `## Plan — ${dateLabel(date)}`, `_${meta.join(" · ")}_`, "", ...(lines.length ? lines : ["- Nothing planned."]), BLOCK_END].join("\n");
+  return [
+    BLOCK_START, `## Plan — ${dateLabel(date)}`, `_${meta.join(" · ")}_`, "", ...(lines.length ? lines : ["- Nothing planned."]),
+    ...sessionMarkdown(db, date), BLOCK_END,
+  ].join("\n");
 }
 
 /** Puts the block into a note: replaces the old block, or adds it under the title, or starts a new note. */

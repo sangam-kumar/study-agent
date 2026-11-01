@@ -18,7 +18,7 @@ export const CLASSIFY_CARD = `Classify the message into exactly one intent:
 - study_done: finished study work that is NOT simply today's planned item (e.g. "did 3 DSA problems").
 - reminder: remind me / alert me at a time or after a delay.
 - note: a short thing to remember for a few days ("my knee hurts, go easy on legs").
-- workout: exercises with sets/reps/weights.
+- workout: exercises with sets/reps/weights, or a correction to sets logged today.
 - snooze: pause the agent's messages for a while.
 - chat: anything else, including questions and small talk.
 Give a confidence from 0 to 1.`;
@@ -48,8 +48,11 @@ For a clock time ("at 6:30 pm") set at_time as 24h HH:MM in IST, set delay_minut
 
   note: `Short-lived note. text: the thing to remember, one sentence. ttl_days: how many days it stays relevant (1-30; default 7).`,
 
-  workout: `Workout log. workout_type (e.g. Chest, Back, Legs, Shoulders, Mobility), exercises with sets, reps and weight_kg when given, optional notes.
-Dumbbell and machine lifts are "kg x reps"; activity-based moves have a single weight or a duration.`,
+  workout: `Workout log. For each exercise: its name as said, and every set in this notation, comma separated:
+"20x15" = 20 kg for 15 reps · "BWx20" = bodyweight, 20 reps · "7kg" = weight only · "15 reps" = reps only · "30s" or "1m" = a hold.
+Write one entry per set: "3 sets of 15 at 20 kg" -> "20x15, 20x15, 20x15". Add " F" after a set taken to failure, "(1m)" for rest after it.
+date: only when a past day was named ("yesterday"). replace: true only for a correction ("actually", "I meant", "scratch that");
+then give the full corrected set list for that exercise, using what is logged today. pain: any pain or injury mentioned. protein_g if said.`,
 
   snooze: `Snooze. duration_hours (default 2) and a short reason.`,
 

@@ -7,6 +7,10 @@
 
 import { lastInsertId } from "./db/db.ts";
 import type { Db, SqlValue } from "./db/db.ts";
+import { displayName, loadCatalog, matchExercise } from "./exercises.ts";
+import type { ExerciseRow } from "./exercises.ts";
+import { sessionShape } from "./fitness.ts";
+import type { SetKind } from "./sets.ts";
 
 // ------------------------------------------------------------------ types
 
@@ -18,7 +22,21 @@ export const READING_SLOTS = ["technical", "narrative"] as const;
 export type ReadingSlot = (typeof READING_SLOTS)[number];
 const MAX_NOTE_TTL_DAYS = 30;
 
+export const SET_KINDS = ["warmup", "working", "drop", "failure"] as const;
+export const METRICS = ["protein_g"] as const;
+
 export type Lane = (typeof LANES)[number];
+
+export interface SetInput {
+  weight_kg: number | null;
+  reps: number | null;
+  duration_s: number | null;
+  rest_s: number | null;
+  kind: SetKind;
+  bw: boolean;
+  notes: string | null;
+  incomplete: boolean;
+}
 export type OverrideType = (typeof OVERRIDE_TYPES)[number];
 export type ItemStatus = (typeof ITEM_STATUSES)[number];
 export type ItemSource = (typeof ITEM_SOURCES)[number];
@@ -41,6 +59,9 @@ export type Op =
   | { type: "finish_reading"; reading_id: number }
   | { type: "hold_reading"; reading_id: number }
   | { type: "drop_reading"; reading_id: number; reason?: string }
+  /** One chunk of a workout. append adds sets; replace swaps the named exercises' sets ("actually it was ..."). */
+  | { type: "log_workout"; date: string; mode: "append" | "replace"; exercises: { name: string; sets: SetInput[] }[]; notes?: string; pain?: string }
+  | { type: "log_metric"; date: string; metric: (typeof METRICS)[number]; value: number }
   | { type: "note"; text: string };
 
 export class OpError extends Error {
@@ -96,6 +117,30 @@ function oneOf<T extends string>(o: Obj, k: string, allowed: readonly T[]): T {
   const v = o[k];
   if (typeof v !== "string" || !(allowed as readonly string[]).includes(v)) fail(`${k} must be one of: ${allowed.join(", ")}`);
   return v as T;
+}
+
+function optNum(o: Obj, k: string, min: number, max: number): number | null {
+  const v = o[k];
+  if (v === undefined || v === null) return null;
+  if (typeof v !== "number" || !Number.isFinite(v) || v < min || v > max) fail(`${k} must be a number in [${min}, ${max}]`);
+  return v;
+}
+
+function validateSet(input: unknown): SetInput {
+  if (typeof input !== "object" || input === null) fail("each set must be an object");
+  const o = input as Obj;
+  const set: SetInput = {
+    weight_kg: optNum(o, "weight_kg", 0, 500),
+    reps: o.reps === undefined || o.reps === null ? null : int(o, "reps", 0, 1000),
+    duration_s: o.duration_s === undefined || o.duration_s === null ? null : int(o, "duration_s", 1, 7200),
+    rest_s: o.rest_s === undefined || o.rest_s === null ? null : int(o, "rest_s", 0, 1800),
+    kind: o.kind === undefined || o.kind === null ? "working" : oneOf(o, "kind", SET_KINDS),
+    bw: o.bw === true,
+    notes: optStr(o, "notes", 200) ?? null,
+    incomplete: o.incomplete === true,
+  };
+  if (set.weight_kg === null && set.reps === null && set.duration_s === null) fail("a set needs a weight, reps or a duration");
+  return set;
 }
 
 function date(o: Obj, k: string): string {
@@ -187,6 +232,28 @@ export function validateOp(input: unknown): Op {
       return { type: o.type, reading_id: int(o, "reading_id", 1) };
     case "drop_reading":
       return { type: "drop_reading", reading_id: int(o, "reading_id", 1), reason: optStr(o, "reason", 300) };
+    case "log_workout": {
+      if (!Array.isArray(o.exercises) || o.exercises.length === 0 || o.exercises.length > 20) fail("exercises must be 1-20 entries");
+      const exercises = o.exercises.map((e) => {
+        if (typeof e !== "object" || e === null) fail("each exercise needs a name and sets");
+        const eo = e as Obj;
+        if (!Array.isArray(eo.sets) || eo.sets.length === 0 || eo.sets.length > 40) fail("each exercise needs 1-40 sets");
+        return { name: str(eo, "name", 100), sets: eo.sets.map(validateSet) };
+      });
+      return {
+        type: "log_workout",
+        date: date(o, "date"),
+        mode: o.mode === undefined ? "append" : oneOf(o, "mode", ["append", "replace"] as const),
+        exercises,
+        notes: optStr(o, "notes", 500),
+        pain: optStr(o, "pain", 200),
+      };
+    }
+    case "log_metric": {
+      const value = optNum(o, "value", 0, 1000);
+      if (value === null) fail("value is required");
+      return { type: "log_metric", date: date(o, "date"), metric: oneOf(o, "metric", METRICS), value };
+    }
     case "note":
       return { type: "note", text: str(o, "text", 1000) };
     default:
@@ -247,6 +314,13 @@ class Recorder {
     const after = this.get(table, key, pk)!;
     this.changes.push({ table, pk, key, before, after });
     return after;
+  }
+
+  delete(table: string, key: SqlValue, pk = "id"): void {
+    const before = this.get(table, key, pk);
+    if (!before) return;
+    this.db.run(`DELETE FROM ${ident(table)} WHERE ${ident(pk)} = ?`, key);
+    this.changes.push({ table, pk, key, before, after: null });
   }
 }
 
@@ -316,6 +390,46 @@ function completeSource(h: HandlerCtx, item: Row): void {
       h.rec.update("reading_item", Number(rd[1]), { state: "done", ended_at: iso(h.now) });
     }
   }
+}
+
+/**
+ * A logged workout ticks off that day's gym item, so the rotation moves on in the same undoable change.
+ * The split you actually did wins: planned Chest but logged back and biceps -> the item becomes Back / Biceps.
+ * Lifting on a day with no gym item adds a done one, so the week counts it.
+ */
+function completeWorkoutItem(h: HandlerCtx, day: string, kind: "lift" | "mobility", split: { ordinal: number; label: string } | null): void {
+  const items = h.db.all<Row>("SELECT * FROM plan_item WHERE date = ? AND lane = 'fitness' ORDER BY id", day);
+  if (kind === "mobility") {
+    const mob = items.find((i) => i.status !== "done" && i.status !== "dropped" && /^mobility/i.test(i.title as string));
+    if (mob) {
+      h.rec.update("plan_item", mob.id as number, { status: "done" });
+      touchDay(h, day);
+    }
+    return;
+  }
+  const gym = items.filter((i) => ((i.ref as string | null) ?? "").startsWith("rotation:"));
+  if (gym.some((i) => i.status === "done")) return;
+  const planned = gym.find((i) => i.status === "planned" || i.status === "skipped");
+  if (planned) {
+    if (split && planned.ref !== `rotation:fitness:${split.ordinal}`) {
+      h.rec.update("plan_item", planned.id as number, { title: `Gym: ${split.label}`, ref: `rotation:fitness:${split.ordinal}` });
+    }
+    const item = h.rec.update("plan_item", planned.id as number, { status: "done" });
+    touchDay(h, day);
+    completeSource(h, item);
+    return;
+  }
+  let rot = split;
+  if (!rot) {
+    const want = Number(h.db.all<{ value: string }>("SELECT value FROM config WHERE key = 'rotation.fitness'")[0]?.value ?? "1");
+    rot = h.db.all<{ ordinal: number; label: string }>("SELECT ordinal, label FROM rotation WHERE lane = 'fitness' AND ordinal = ?", want)[0] ?? null;
+  }
+  if (!rot) return;
+  touchDay(h, day);
+  const id = h.rec.insert("plan_item", {
+    date: day, lane: "fitness", title: `Gym: ${rot.label}`, ref: `rotation:fitness:${rot.ordinal}`, source: "user", status: "done",
+  });
+  completeSource(h, h.rec.get("plan_item", id)!);
 }
 
 const HANDLERS: { [K in Op["type"]]: (h: HandlerCtx, op: Extract<Op, { type: K }>) => HandlerResult } = {
@@ -490,6 +604,79 @@ const HANDLERS: { [K in Op["type"]]: (h: HandlerCtx, op: Extract<Op, { type: K }
     if (r.state === "done" || r.state === "dropped") throw new OpError(`${r.title} is already ${r.state}`);
     h.rec.update("reading_item", op.reading_id, { state: "dropped", ended_at: iso(h.now), drop_reason: op.reason ?? null });
     return { lane: "reading", refId: op.reading_id, summary: `Dropped: ${r.title}${op.reason ? ` (${op.reason})` : ""}` };
+  },
+
+  log_workout(h, op) {
+    const now = iso(h.now);
+    const existing = h.db.all<Row>("SELECT * FROM workout_session WHERE date = ?", op.date)[0];
+    let sessionId: number;
+    if (existing) {
+      sessionId = existing.id as number;
+      // A late chunk reopens the same day's session.
+      h.rec.update("workout_session", sessionId, { status: "open", closed_at: null, version: (existing.version as number) + 1 });
+    } else {
+      sessionId = h.rec.insert("workout_session", { date: op.date, status: "open", source: "telegram", version: 1, created_at: now }) as number;
+    }
+
+    const catalog = loadCatalog(h.db);
+    const added: string[] = [];
+    const names: string[] = [];
+    let total = 0;
+    for (const ex of op.exercises) {
+      let entry = matchExercise(catalog, ex.name);
+      if (!entry) {
+        const name = displayName(ex.name);
+        const id = h.rec.insert("exercise_catalog", { canonical_name: name, kind: "weighted", aliases_json: "[]", source: "user" });
+        entry = h.rec.get("exercise_catalog", id) as unknown as ExerciseRow;
+        catalog.push(entry);
+        added.push(name);
+      }
+      let se = h.db.all<Row>("SELECT * FROM session_exercise WHERE session_id = ? AND exercise_id = ? ORDER BY id LIMIT 1", sessionId, entry.id)[0];
+      if (!se) {
+        const ordinal = (h.db.all<{ m: number | null }>("SELECT MAX(ordinal) AS m FROM session_exercise WHERE session_id = ?", sessionId)[0].m ?? 0) + 1;
+        const id = h.rec.insert("session_exercise", { session_id: sessionId, ordinal, exercise_id: entry.id, display_name: entry.canonical_name, status: "done" });
+        se = h.rec.get("session_exercise", id)!;
+      } else if (se.status !== "done") {
+        h.rec.update("session_exercise", se.id as number, { status: "done" });
+      }
+      const old = h.db.all<{ id: number; set_no: number }>("SELECT id, set_no FROM session_set WHERE session_exercise_id = ? ORDER BY set_no", se.id as number);
+      if (op.mode === "replace") for (const s of old) h.rec.delete("session_set", s.id);
+      let setNo = op.mode === "replace" ? 0 : old.reduce((m, s) => Math.max(m, s.set_no), 0);
+      for (const s of ex.sets) {
+        h.rec.insert("session_set", {
+          session_exercise_id: se.id as number, set_no: ++setNo, reps: s.reps, weight_kg: s.weight_kg, duration_s: s.duration_s,
+          rest_s: s.rest_s, bw: s.bw ? 1 : 0, kind: s.kind, incomplete: s.incomplete ? 1 : 0, notes: s.notes,
+        });
+      }
+      total += ex.sets.length;
+      names.push(entry.canonical_name);
+    }
+
+    const sess = h.rec.get("workout_session", sessionId)!;
+    const patch: Row = {};
+    if (op.notes) patch.notes = sess.notes ? `${sess.notes}; ${op.notes}` : op.notes;
+    if (op.pain) {
+      patch.pain_notes = sess.pain_notes ? `${sess.pain_notes}; ${op.pain}` : op.pain;
+      // The implication lives a week, then expires on its own.
+      h.rec.insert("note", { lane: "fitness", text: `Pain: ${op.pain}`, created_at: now, expires_at: iso(new Date(h.now.getTime() + 7 * 86_400_000)) });
+    }
+    const shape = sessionShape(h.db, sessionId, (sess.title as string | null) ?? null);
+    if (shape.kind !== sess.kind) patch.kind = shape.kind;
+    if (shape.title !== sess.title) patch.title = shape.title;
+    if (Object.keys(patch).length > 0) h.rec.update("workout_session", sessionId, patch);
+
+    completeWorkoutItem(h, op.date, shape.kind, shape.split);
+
+    const verb = op.mode === "replace" ? "Corrected" : "Logged";
+    const newOnes = added.length ? ` (new: ${added.join(", ")})` : "";
+    return { lane: "fitness", refId: sessionId, summary: `${verb} ${total} set${total === 1 ? "" : "s"}: ${names.join(", ")}${newOnes}` };
+  },
+
+  log_metric(h, op) {
+    const cur = h.db.all<Row>("SELECT * FROM metric_log WHERE date = ? AND metric = ?", op.date, op.metric)[0];
+    if (cur) h.rec.update("metric_log", cur.id as number, { value: op.value, ts: iso(h.now) });
+    else h.rec.insert("metric_log", { date: op.date, metric: op.metric, value: op.value, ts: iso(h.now) });
+    return { lane: "fitness", refId: op.date, summary: `Protein ${op.date}: ${op.value} g` };
   },
 
   note(_h, op) {

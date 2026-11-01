@@ -84,14 +84,16 @@ export default {
       if (body.length > MAX_SEED_BYTES) {
         return Response.json({ ok: false, error: `body larger than ${MAX_SEED_BYTES} bytes` }, { status: 413 });
       }
+      const kind = url.searchParams.get("kind") ?? "study";
       let json: unknown;
       try {
         json = JSON.parse(body);
       } catch {
-        return Response.json({ ok: false, error: "body is not valid JSON" }, { status: 400 });
+        // kind=fitness takes life/gym-tracking.md as it is.
+        if (kind !== "fitness") return Response.json({ ok: false, error: "body is not valid JSON" }, { status: 400 });
+        json = { markdown: body };
       }
 
-      const kind = url.searchParams.get("kind") ?? "study";
       const agent = await getAgentByName<Env, StudyAgent>(env.STUDY_AGENT, "singleton");
       const result = await agent.loadSeed(kind, json);
       return Response.json(result, { status: result.ok ? 200 : 400 });

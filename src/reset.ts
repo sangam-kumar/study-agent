@@ -3,7 +3,8 @@
 // Scopes are explicit and composable so nothing real is deleted by accident:
 //
 //   logs       interaction_logs, processed_update
-//   workouts   workout_logs                         (v1 table)
+//   workouts   workout sessions, exercises, sets, protein numbers, and the v1 workout_logs
+//              (the exercise catalog is kept)
 //   reminders  reminders                            (+ the matching delayed alarms: see agent.resetData)
 //   reading    reading_queue                        (v1 table)
 //   snooze     the pause (config 'mute', and the v1 bot_state snooze keys)
@@ -29,7 +30,7 @@ export class ResetError extends Error {
 /** Child tables first so foreign keys never block a delete. */
 const TABLES: Record<Exclude<ResetScope, "snooze" | "pointers" | "shelf">, string[]> = {
   logs: ["interaction_logs", "processed_update"],
-  workouts: ["workout_logs"],
+  workouts: ["session_set", "session_exercise", "workout_session", "metric_log", "workout_logs"],
   reminders: ["reminders"],
   reading: ["reading_queue"],
   plan: ["revision", "event", "inbox", "plan_item", "day_plan", "override", "note"],

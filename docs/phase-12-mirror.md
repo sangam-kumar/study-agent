@@ -49,12 +49,12 @@ Each run looks at **yesterday, today and tomorrow** and writes only the days who
 ## 4. Sub-steps
 
 - [x] 12.1 GitHub client (read with UTF-8, multi-file single commit, retry on a moved branch); one commit per lock for `daily/…`.
-- [ ] 12.2 Regenerate `study/reading/reading-queue.md` from the reading items — **deliberately not done**, see §5.
+- [-] 12.2 Regenerate `study/reading/reading-queue.md` from the reading items — **dropped** (1 Nov 2026), see §5.
 - [x] 12.3 Failure policy: never blocks the reply; retried at the next lock.
 
 ## 5. Why `reading-queue.md` is not regenerated (yet)
 
-Regenerating it from the database would (a) overwrite the file you edit by hand, (b) re-number the queue lines, and `seed_reading.py` keys queue items by **position** (`queue:001` …), so a later reseed would attach the wrong states to the wrong items, and (c) only matters to `scripts/daily_reminder.py`, the old GitHub-Issue notifier the agent replaces. Decide first whether that notifier stays (reform plan); if it goes, 12.2 is unnecessary. If it stays, switch queue keys to content-based slugs before regenerating.
+Regenerating it from the database would (a) overwrite the file you edit by hand, (b) re-number the queue lines, and `seed_reading.py` keys queue items by **position** (`queue:001` …), so a later reseed would attach the wrong states to the wrong items, and (c) only matters to `scripts/daily_reminder.py`, the old GitHub-Issue notifier the agent replaces. **Decision (1 Nov 2026):** the notifier was retired on 31 Oct, so 12.2 is dropped. The shelf lives in the agent (`/books`); the markdown file stays yours to edit.
 
 ## 6. Validation
 

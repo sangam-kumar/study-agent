@@ -11,10 +11,11 @@ import { InferError, ValidationError, infer } from "./infer.ts";
 import type { InferBackend, JsonSchema } from "./infer.ts";
 import { parseBookCommand } from "./reading.ts";
 import { ReminderTimeError, resolveDelayMinutes } from "./reminder-time.ts";
+import { firstOccurrence, parseRepeat, resolveReminder } from "./reminders.ts";
 import { buildSnapshot } from "./snapshot.ts";
 import { queryPlan } from "./seed.ts";
 import { resolvePlanItem } from "./day.ts";
-import { addDays, dayKey } from "./time.ts";
+import { addDays, dayKey, istWallToMs } from "./time.ts";
 import { findExercise } from "./exercises.ts";
 import { parseSets } from "./sets.ts";
 import type { LogWorkoutOp } from "./fitness.ts";
@@ -24,8 +25,11 @@ export const MIN_CONFIDENCE = 0.6;
 export type Outcome =
   /** affects: an override's date range, so the agent can re-plan today/tomorrow even if locked. */
   | { kind: "ops"; ops: Record<string, unknown>[]; affects?: { from: string; to: string } }
-  /** dueMs: the exact instant, so model latency never shifts the time. */
-  | { kind: "reminder"; text: string; dueMs: number }
+  /** dueMs: the exact instant, so model latency never shifts the time. repeat: "daily" | "weekdays" | "weekly:0,2". */
+  | { kind: "reminder"; text: string; dueMs: number; repeat?: string }
+  /** A day with no time: shown in the brief and the recap, never pinged. */
+  | { kind: "task"; text: string; dueDate: string }
+  | { kind: "reminder_action"; action: "cancel" | "done"; id: number }
   /** protein: grams, when the same message mentioned it. */
   | { kind: "workout"; op: LogWorkoutOp; protein?: number }
   | { kind: "snooze"; hours: number; reason: string }
@@ -133,12 +137,16 @@ const EXTRACT_SCHEMAS: Record<Intent, JsonSchema> = {
   ),
   reminder: S(
     {
+      action: { type: "string", enum: ["set", "cancel", "done"] },
+      ref: { type: "string", description: "cancel/done: words that identify the reminder" },
+      no_time: { type: "boolean", description: "true when only a day was given, no clock time" },
+      repeat: { type: "string", description: '"daily", "weekdays", or day names like "mon thu"; else empty' },
       reminder_text: { type: "string" },
       delay_minutes: { type: "number", description: "relative requests only; 0 for a clock time" },
       at_time: { type: "string", description: "24h HH:MM IST for a clock time, else empty" },
       on_date: { type: "string", description: "YYYY-MM-DD IST when a day was named, else empty" },
     },
-    ["reminder_text", "delay_minutes"],
+    ["action"],
   ),
   note: S({ text: { type: "string" }, ttl_days: { type: "number", description: "1-30" } }, ["text"]),
   workout: S(
@@ -244,21 +252,46 @@ const LANE_HANDLERS: Record<Intent, (db: Db, nowMs: number) => { validate: (raw:
     },
   }),
 
-  reminder: (_db, nowMs) => ({
+  reminder: (db, nowMs) => ({
     validate: (raw) => {
       const o = asObj(raw);
+      const action = o.action === undefined || o.action === null || o.action === "" ? "set" : oneOf(o, "action", ["set", "cancel", "done"] as const);
+      if (action !== "set") return { action, ref: str(o, "ref", 200) };
       const text = str(o, "reminder_text", 300);
+      if (o.no_time === true) {
+        const due = optYmd(o, "on_date", nowMs) ?? dayKey(nowMs);
+        return { action, text, dueDate: due };
+      }
+      const repeatRaw = optStr(o, "repeat", 60);
+      if (repeatRaw) {
+        const rule = parseRepeat(repeatRaw);
+        if (!rule) throw new ValidationError(`repeat "${repeatRaw}" must be daily, weekdays or day names`);
+        const at = optStr(o, "at_time", 10);
+        if (!at || !/^([01]?\d|2[0-3]):[0-5]\d$/.test(at)) throw new ValidationError("a repeating reminder needs at_time as HH:MM");
+        const hhmm = at.padStart(5, "0");
+        // The first firing: the named day if given, else the next matching day.
+        const from = optYmd(o, "on_date", nowMs);
+        const after = from ? Math.max(nowMs, istWallToMs(from, "00:00") - 1) : nowMs;
+        return { action, text, dueMs: firstOccurrence(rule, hhmm, after), repeat: rule };
+      }
       const delay = typeof o.delay_minutes === "number" ? o.delay_minutes : undefined;
       try {
         const minutes = resolveDelayMinutes({ delay_minutes: delay, at_time: optStr(o, "at_time", 10), on_date: optStr(o, "on_date", 10) }, nowMs);
         if (minutes > 60 * 24 * 60) throw new ValidationError("that is more than 60 days away");
-        return { text, dueMs: Math.round(nowMs + minutes * 60_000) };
+        return { action, text, dueMs: Math.round(nowMs + minutes * 60_000) };
       } catch (e) {
         if (e instanceof ReminderTimeError) throw new ValidationError(e.message);
         throw e;
       }
     },
-    map: (v: { text: string; dueMs: number }): Outcome => ({ kind: "reminder", text: v.text, dueMs: v.dueMs }),
+    map: (v: { action: "set" | "cancel" | "done"; ref?: string; text?: string; dueMs?: number; dueDate?: string; repeat?: string }): Outcome => {
+      if (v.action !== "set") {
+        const found = resolveReminder(db, v.ref!);
+        return "reply" in found ? { kind: "reply", html: found.reply } : { kind: "reminder_action", action: v.action, id: found.reminder.id };
+      }
+      if (v.dueDate) return { kind: "task", text: v.text!, dueDate: v.dueDate };
+      return { kind: "reminder", text: v.text!, dueMs: v.dueMs!, ...(v.repeat ? { repeat: v.repeat } : {}) };
+    },
   }),
 
   note: () => ({

@@ -27,6 +27,10 @@ import { DEFAULT_TIMES, JOB_CALLBACK, JOB_KINDS, nextRun } from "./jobs.ts";
 import type { JobTimes } from "./jobs.ts";
 import { WEEKDAY_NAMES, addDays, dateLabel, dayKey, istWallToMs, weekdayIndex } from "./time.ts";
 import { formatIn, formatWhen } from "./reminder-time.ts";
+import {
+  REMINDER_BUTTONS, describeRepeat, findDuplicate, getReminder, insertReminder, markCancelled, markDone, markFired, nextOccurrence,
+  renderReminderList, reschedule, resolveReminder, tomorrowAt,
+} from "./reminders.ts";
 import { GitHubClient } from "./github/client.ts";
 import { mirrorDays } from "./mirror.ts";
 import {
@@ -125,7 +129,7 @@ export class StudyAgent extends Agent<Env> {
 
       let alarms: number | undefined;
       if (scopes.includes("reminders")) {
-        const pending = (await this.listSchedules()).filter((s) => s.callback === "triggerReminder");
+        const pending = (await this.listSchedules()).filter((s) => s.callback === "triggerReminder" || s.callback === "reminderFollowup");
         alarms = pending.length;
         if (!dryRun) for (const s of pending) await this.cancelSchedule(s.id);
       }
@@ -278,6 +282,11 @@ export class StudyAgent extends Agent<Env> {
   private async processTelegramUpdate(update: any): Promise<void> {
     console.log("StudyAgent received Telegram update:", JSON.stringify(update));
 
+    if (update.callback_query) {
+      await this.handleCallback(update.callback_query);
+      return;
+    }
+
     const message = update.message;
     if (!message) {
       console.log("Update does not contain a message, ignoring.");
@@ -417,7 +426,13 @@ Total queued articles: <b>${count}</b>`
         return;
       }
       case "reminder":
-        await telegram.sendMessage(chatId, `${await this.scheduleReminderAt(outcome.dueMs, outcome.text)}${heard}`);
+        await telegram.sendMessage(chatId, `${await this.scheduleReminderAt(outcome.dueMs, outcome.text, outcome.repeat)}${heard}`);
+        return;
+      case "task":
+        await telegram.sendMessage(chatId, `${this.addTask(outcome.text, outcome.dueDate)}${heard}`);
+        return;
+      case "reminder_action":
+        await telegram.sendMessage(chatId, `${await this.closeReminder(outcome.id, outcome.action)}${heard}`);
         return;
       case "workout": {
         let extra = "";
@@ -695,7 +710,9 @@ Total queued articles: <b>${count}</b>`
           "• <code>/book add|start|keep|hold|done|drop</code> - Manage the shelf by id or title",
           "",
           "⏰ <b>Reminders &amp; other</b>",
-          "• <code>/remind &lt;minutes&gt; &lt;text&gt;</code> · <code>/reminders</code> (for a date and time, just say it)",
+          "• <i>remind me Friday 4pm to call the bank</i> · <i>every Monday 9am review the week</i> · <i>submit the form by Friday</i> (no time = on your list, no ping)",
+          "• When one fires: ✅ Done · ⏰ 1h · 📅 Tomorrow. No answer → one repeat after 30 min, then it's in the evening recap.",
+          "• <code>/reminders</code> · <code>/done &lt;id&gt;</code> · <code>/cancel &lt;id&gt;</code> (or <i>cancel the bank reminder</i>) · <code>/remind &lt;minutes&gt; &lt;text&gt;</code>",
           "• <code>/inbox</code> - Messages I wasn't sure about (<code>/inbox done &lt;id&gt;</code>)",
           "• <code>/snooze &lt;hours&gt;</code> · <code>/unsnooze</code> - Pause my messages (your reminders still fire)",
           "• <code>/jobs</code> · <code>/testcue evening|lock|morning</code> · <code>/status</code> · <code>/queue</code> · <code>/recent</code>",
@@ -848,22 +865,20 @@ Total queued articles: <b>${count}</b>`
       }
 
       case "/reminders": {
-        const pending = this.sql<ReminderRow>`SELECT id, reminder_type, trigger_at, payload_json, status, created_at 
-                                              FROM reminders WHERE status = 'pending' ORDER BY trigger_at ASC LIMIT 10`;
-        if (pending.length === 0) {
-          await telegram.sendMessage(chatId, "📭 No pending reminders.");
-          return;
-        }
+        await telegram.sendMessage(chatId, renderReminderList(doDb(this.ctx), Date.now()));
+        break;
+      }
 
-        const nowMs = Date.now();
-        const lines = pending.map((r, i) => {
-          let note = "Reminder";
-          try {
-            if (r.payload_json) note = JSON.parse(r.payload_json).text ?? note;
-          } catch {}
-          return `${i + 1}. <b>${formatWhen(r.trigger_at, nowMs)}</b> — ${escapeHtml(note)} <i>(${formatIn(r.trigger_at, nowMs)})</i>`;
-        });
-        await telegram.sendMessage(chatId, `⏰ <b>Upcoming Reminders:</b>\n\n${lines.join("\n")}`);
+      case "/done":
+      case "/cancel": {
+        const ref = args.join(" ").trim();
+        const action = command === "/done" ? "done" : "cancel";
+        if (!ref) {
+          await telegram.sendMessage(chatId, `Usage: <code>${command} &lt;id&gt;</code> (ids are in /reminders), or <code>${command} bank</code>`);
+          break;
+        }
+        const found = resolveReminder(doDb(this.ctx), ref);
+        await telegram.sendMessage(chatId, "reply" in found ? found.reply : await this.closeReminder(found.reminder.id, action));
         break;
       }
 
@@ -1009,37 +1024,153 @@ Total queued articles: <b>${count}</b>`
 
   /**
    * Stores a reminder and schedules it at its exact due instant (not "N minutes from whenever the
-   * model finished"). Returns the confirmation text.
+   * model finished"). The same reminder twice is refused. Returns the confirmation text.
    */
-  async scheduleReminderAt(dueMs: number, text: string): Promise<string> {
+  async scheduleReminderAt(dueMs: number, text: string, repeat?: string | null): Promise<string> {
+    const db = doDb(this.ctx);
     const nowMs = Date.now();
-    const due = Math.max(Math.round(dueMs), nowMs + 1000);
-    this.sql`INSERT INTO reminders (reminder_type, trigger_at, payload_json, status)
-             VALUES ('adhoc', ${due}, ${JSON.stringify({ text })}, 'pending')`;
-    const reminderId = this.sql<{ id: number }>`SELECT last_insert_rowid() as id`[0]?.id;
-    await this.schedule(new Date(due), "triggerReminder", JSON.stringify({ reminderId, text }));
-    return `⏰ <b>${escapeHtml(text)}</b>\n${formatWhen(due, nowMs)} <i>(${formatIn(due, nowMs)})</i>`;
+    const dup = findDuplicate(db, text, { dueMs });
+    if (dup) return `⏰ Already set: <b>${escapeHtml(dup.text)}</b>, ${formatWhen(dup.trigger_at, nowMs)} <code>#${dup.id}</code>`;
+    const id = insertReminder(db, { text, dueMs, repeat }, nowMs);
+    const due = getReminder(db, id)!.trigger_at;
+    await this.schedule(new Date(due), "triggerReminder", JSON.stringify({ reminderId: id, dueMs: due }));
+    const rep = repeat ? ` · ${describeRepeat(repeat)}` : "";
+    return `⏰ <b>${escapeHtml(text)}</b>¶${formatWhen(due, nowMs)} <i>(${formatIn(due, nowMs)})</i>${rep}¶<i>/cancel ${id} to cancel</i>`;
+  }
+
+  /** A day with no time: no ping, it shows in the morning brief and the evening recap until done. */
+  private addTask(text: string, dueDate: string): string {
+    const db = doDb(this.ctx);
+    const dup = findDuplicate(db, text, { dueDate });
+    if (dup) return `📌 Already on your list: <b>${escapeHtml(dup.text)}</b> by ${dateLabel(dueDate)} <code>#${dup.id}</code>`;
+    const id = insertReminder(db, { text, dueDate }, Date.now());
+    return `📌 <b>${escapeHtml(text)}</b> by ${dateLabel(dueDate)}¶<i>It'll be in your morning brief and evening recap. /done ${id} when it's done.</i>`;
+  }
+
+  /** Done or cancelled: the row is closed and any alarm still waiting for it is removed. */
+  private async closeReminder(id: number, action: "done" | "cancel"): Promise<string> {
+    const db = doDb(this.ctx);
+    const r = getReminder(db, id);
+    if (!r || r.status === "done" || r.status === "cancelled") return `Reminder #${id} is already closed.`;
+    if (action === "done") markDone(db, id, Date.now());
+    else markCancelled(db, id);
+    await this.cancelReminderAlarms(id);
+    return action === "done" ? `✅ Done: <b>${escapeHtml(r.text)}</b>` : `🗑 Cancelled: <b>${escapeHtml(r.text)}</b>${r.repeat_rule ? ` (${describeRepeat(r.repeat_rule)})` : ""}`;
+  }
+
+  private async cancelReminderAlarms(id: number): Promise<void> {
+    for (const sch of await this.listSchedules()) {
+      if (sch.callback !== "triggerReminder" && sch.callback !== "reminderFollowup") continue;
+      try {
+        if (JSON.parse(String(sch.payload)).reminderId === id) await this.cancelSchedule(sch.id);
+      } catch {}
+    }
   }
 
   /**
    * Invoked by the scheduler when a reminder is due. It is marked sent only after Telegram accepts
    * it; a failed send throws, so the scheduler retries instead of silently dropping it.
+   * Sent with Done / 1h / Tomorrow; a repeating one schedules its next firing.
    */
   async triggerReminder(payloadStr: string): Promise<void> {
-    let payload: { reminderId?: number; text: string };
+    let payload: { reminderId?: number; text?: string; dueMs?: number };
     try {
       payload = JSON.parse(payloadStr);
     } catch {
       console.error("Unreadable reminder payload:", payloadStr);
       return;
     }
-    if (payload.reminderId) {
-      const row = this.sql<{ status: string }>`SELECT status FROM reminders WHERE id = ${payload.reminderId}`[0];
-      if (!row || row.status !== "pending") return; // cleared, cancelled or already sent
-    }
     const chatId = this.env.USER_TELEGRAM_CHAT_ID;
     if (!chatId) return;
-    await new TelegramClient(this.env.TELEGRAM_BOT_TOKEN).sendMessage(chatId, `⏰ <b>Reminder:</b>\n\n${escapeHtml(payload.text)}`);
-    if (payload.reminderId) this.sql`UPDATE reminders SET status = 'dispatched' WHERE id = ${payload.reminderId}`;
+    const telegram = new TelegramClient(this.env.TELEGRAM_BOT_TOKEN);
+    if (!payload.reminderId) {
+      await telegram.sendMessage(chatId, `⏰ <b>Reminder:</b>¶¶${escapeHtml(payload.text ?? "Reminder")}`);
+      return;
+    }
+    const db = doDb(this.ctx);
+    const r = getReminder(db, payload.reminderId);
+    if (!r || r.status !== "pending") return; // done, cancelled or already sent
+    // Snoozed since this alarm was set: the newer alarm will fire it.
+    if (payload.dueMs !== undefined && Math.abs(r.trigger_at - payload.dueMs) > 1000) return;
+
+    const nowMs = Date.now();
+    const messageId = await telegram.sendMessage(chatId, `⏰ <b>${escapeHtml(r.text)}</b>`, "HTML", REMINDER_BUTTONS(r.id));
+    markFired(db, r.id, nowMs, messageId ?? null);
+    await this.schedule(30 * 60, "reminderFollowup", JSON.stringify({ reminderId: r.id, firedAt: getReminder(db, r.id)!.fired_at }));
+
+    if (r.repeat_rule) {
+      const next = nextOccurrence(r.repeat_rule, r.trigger_at, nowMs);
+      const id = insertReminder(db, { text: r.text, dueMs: next, repeat: r.repeat_rule }, nowMs);
+      // The chain moves to the new row, so snoozing this one never starts a second chain.
+      db.run("UPDATE reminders SET repeat_rule = NULL WHERE id = ?", r.id);
+      await this.schedule(new Date(next), "triggerReminder", JSON.stringify({ reminderId: id, dueMs: next }));
+    }
+  }
+
+  /** 30 minutes after firing with no answer: one repeat. After that it waits for the evening recap. */
+  async reminderFollowup(payloadStr: string): Promise<void> {
+    let payload: { reminderId: number; firedAt: string | null };
+    try {
+      payload = JSON.parse(payloadStr);
+    } catch {
+      return;
+    }
+    const db = doDb(this.ctx);
+    const r = getReminder(db, payload.reminderId);
+    if (!r || r.status !== "dispatched" || r.repeats > 0 || r.fired_at !== payload.firedAt) return;
+    const chatId = this.env.USER_TELEGRAM_CHAT_ID;
+    if (!chatId) return;
+    const messageId = await new TelegramClient(this.env.TELEGRAM_BOT_TOKEN).sendMessage(
+      chatId, `⏰ Still on: <b>${escapeHtml(r.text)}</b>`, "HTML", REMINDER_BUTTONS(r.id),
+    );
+    db.run("UPDATE reminders SET repeats = repeats + 1, message_id = COALESCE(?, message_id) WHERE id = ?", messageId ?? null, r.id);
+  }
+
+  // ─── Buttons ────────────────────────────────────────────────────────────────
+
+  /** A tap on an inline button. Data is "<area>:<action>:<id>". */
+  private async handleCallback(cq: any): Promise<void> {
+    const telegram = new TelegramClient(this.env.TELEGRAM_BOT_TOKEN);
+    const chatId = String(cq.message?.chat?.id ?? cq.from?.id ?? "");
+    if (this.env.USER_TELEGRAM_CHAT_ID && chatId !== this.env.USER_TELEGRAM_CHAT_ID) return;
+    const [area, action, rawId] = String(cq.data ?? "").split(":");
+    let result: { toast: string; text?: string } = { toast: "That button has expired." };
+    try {
+      if (area === "r") result = await this.reminderButton(action, Number(rawId));
+      else result = await this.otherButton(area, action, rawId);
+    } catch (err) {
+      console.error("button failed:", err);
+      result = { toast: "Something went wrong." };
+    }
+    await telegram.answerCallbackQuery(cq.id, result.toast);
+    const messageId = cq.message?.message_id;
+    if (messageId && result.text) await telegram.editMessageText(chatId, messageId, result.text).catch((e) => console.warn("edit failed:", e));
+  }
+
+  /** Done / Snooze 1h / Tomorrow on a fired reminder. Returns the toast and the message's new text (buttons removed). */
+  private async reminderButton(action: string, id: number): Promise<{ toast: string; text?: string }> {
+    const db = doDb(this.ctx);
+    const r = getReminder(db, id);
+    if (!r) return { toast: "That reminder is gone." };
+    if (r.status === "done" || r.status === "cancelled") return { toast: `Already ${r.status}.`, text: `⏰ ${escapeHtml(r.text)}¶<i>${r.status}</i>` };
+    const nowMs = Date.now();
+    if (action === "done") {
+      markDone(db, id, nowMs);
+      await this.cancelReminderAlarms(id);
+      return { toast: "Done ✅", text: `✅ <s>${escapeHtml(r.text)}</s>` };
+    }
+    if (action === "snooze" || action === "tmrw") {
+      const due = action === "snooze" ? nowMs + 3600_000 : tomorrowAt(r, nowMs);
+      await this.cancelReminderAlarms(id);
+      reschedule(db, id, due);
+      await this.schedule(new Date(due), "triggerReminder", JSON.stringify({ reminderId: id, dueMs: Math.round(due) }));
+      return { toast: action === "snooze" ? "In 1 hour" : "Tomorrow", text: `⏰ ${escapeHtml(r.text)}¶<i>moved to ${formatWhen(due, nowMs)}</i>` };
+    }
+    return { toast: "That button has expired." };
+  }
+
+  /** Buttons that are not reminders (nudges, the pause question). */
+  private async otherButton(_area: string, _action: string, _id: string): Promise<{ toast: string; text?: string }> {
+    return { toast: "That button has expired." };
   }
 }

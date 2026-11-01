@@ -16,7 +16,7 @@ export const CLASSIFY_CARD = `Classify the message into exactly one intent:
 - override: the user's circumstances change for some days: travelling, sick, out for the day, feeling low ("travelling Fri to Sun", "down with fever", "out all day tomorrow", "feeling low today").
 - reading: add, start, keep, pause, finish or drop a book/article ("done with the ML book", "drop Sapiens, boring", "add Deep Work by Cal Newport").
 - study_done: finished study work that is NOT simply today's planned item (e.g. "did 3 DSA problems").
-- reminder: remind me / alert me at a time or after a delay.
+- reminder: remind me / alert me at a time or after a delay, a task due by a day, a repeating reminder, or cancelling one.
 - note: a short thing to remember for a few days ("my knee hurts, go easy on legs").
 - workout: exercises with sets/reps/weights, or a correction to sets logged today.
 - snooze: pause the agent's messages for a while.
@@ -44,7 +44,10 @@ list_id must be one of the ids shown. If you cannot tell which list, lower your 
 
   reminder: `Reminder. Extract reminder_text (what to be reminded of, without the time words).
 For a delay ("in 30 minutes", "in 2 hours") set delay_minutes and leave at_time and on_date empty.
-For a clock time ("at 6:30 pm") set at_time as 24h HH:MM in IST, set delay_minutes to 0, and set on_date (YYYY-MM-DD, from the calendar below) only if a day was named (today, tomorrow, Friday, a date). Never convert a clock time into minutes yourself.`,
+For a clock time ("at 6:30 pm") set at_time as 24h HH:MM in IST, set delay_minutes to 0, and set on_date (YYYY-MM-DD, from the calendar below) only if a day was named (today, tomorrow, Friday, a date). Never convert a clock time into minutes yourself.
+A day with no time ("submit the form by Friday", "pay rent on the 5th") is a task: set no_time true and on_date; delay_minutes 0.
+Repeating ("every Monday 9am", "daily at 8pm", "weekdays 7am"): repeat = "daily", "weekdays" or the day names ("mon", "mon thu"); at_time required.
+action: "set" (default), "cancel" ("cancel the bank reminder", "forget the gym reminder") or "done" ("I paid the rent"); for cancel/done put the words that identify it in ref.`,
 
   note: `Short-lived note. text: the thing to remember, one sentence. ttl_days: how many days it stays relevant (1-30; default 7).`,
 

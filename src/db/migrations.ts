@@ -273,6 +273,20 @@ CREATE TABLE IF NOT EXISTS metric_log (
 );
 `;
 
+// Reminders v2 (spec §12) extend the v1 table: text as a column, date-only tasks, repeats,
+// and what is needed to follow up on a fired reminder (when, how often, which message to edit).
+const V7_SQL = `
+ALTER TABLE reminders ADD COLUMN text TEXT;
+ALTER TABLE reminders ADD COLUMN due_date TEXT;
+ALTER TABLE reminders ADD COLUMN repeat_rule TEXT;
+ALTER TABLE reminders ADD COLUMN fired_at TEXT;
+ALTER TABLE reminders ADD COLUMN repeats INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE reminders ADD COLUMN message_id INTEGER;
+ALTER TABLE reminders ADD COLUMN done_at TEXT;
+UPDATE reminders SET text = json_extract(payload_json, '$.text') WHERE text IS NULL AND payload_json IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_reminders_status ON reminders(status, trigger_at);
+`;
+
 export interface Migration {
   version: number;
   name: string;
@@ -288,6 +302,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 4, name: "optional plan items", sql: V4_SQL },
   { version: 5, name: "repo mirror state", sql: V5_SQL },
   { version: 6, name: "fitness lane: sessions, exercises, sets, metrics", sql: V6_SQL, run: (db) => void migrateV1Workouts(db) },
+  { version: 7, name: "reminders v2: tasks, repeats, follow-up", sql: V7_SQL },
 ];
 
 /** Apply any migration not yet recorded. Safe on a database that predates schema_migrations. */

@@ -18,6 +18,7 @@ import { loadReadingSeed } from "../src/seed-reading.ts";
 import { loadStudySeed } from "../src/seed.ts";
 import { istWallToMs } from "../src/time.ts";
 import { understand } from "../src/understand.ts";
+import { insertReminder } from "../src/reminders.ts";
 import type { Outcome } from "../src/understand.ts";
 import { migratedDb } from "../tests/helpers.ts";
 
@@ -48,6 +49,7 @@ const ddia = db.all<{ id: number }>("SELECT id FROM reading_item WHERE title LIK
 applyOp(db, { type: "start_reading", reading_id: ddia }, { now });
 ensureDraft(db, TODAY, nowMs);
 ensureDraft(db, TOMORROW, nowMs);
+const bankReminder = insertReminder(db, { text: "call the bank about the card", dueMs: istWallToMs(TOMORROW, "16:00") }, nowMs);
 const item = (date: string, pred: (t: string) => boolean) => loadItems(db, date).find((i) => pred(i.title))?.id;
 const bookId = (like: string) => db.all<{ id: number }>("SELECT id FROM reading_item WHERE title LIKE ?", like)[0]?.id;
 
@@ -72,6 +74,10 @@ const cases: Case[] = [
   { group: "reminder", text: "remind me to play ball at 6:30 pm today", expect: "reminder today 18:30", check: (o) => o.kind === "reminder" && o.dueMs === istWallToMs(TODAY, "18:30") && /ball/i.test(o.text), workers: true },
   { group: "reminder", text: "remind me in 45 minutes to stretch", expect: "reminder in 45 min", check: (o) => o.kind === "reminder" && o.dueMs === nowMs + 45 * 60_000 },
   { group: "reminder", text: "remind me tomorrow at 7am to call the bank", expect: "reminder Tue 07:00", check: (o) => o.kind === "reminder" && o.dueMs === istWallToMs(TOMORROW, "07:00") },
+  { group: "reminder", text: "submit the Amazon application by Sunday", expect: "task due Sun 8 Nov, no ping", check: (o) => o.kind === "task" && o.dueDate === "2026-11-08" && /amazon/i.test(o.text) },
+  { group: "reminder", text: "every Monday at 9am remind me to review the week", expect: "repeat weekly:0, first Mon 9 Nov 09:00", check: (o) => o.kind === "reminder" && o.repeat === "weekly:0" && o.dueMs === istWallToMs("2026-11-09", "09:00") },
+  { group: "reminder", text: "remind me every weekday at 7:30 am to stretch", expect: "repeat weekdays, first Tue 07:30", check: (o) => o.kind === "reminder" && o.repeat === "weekdays" && o.dueMs === istWallToMs(TOMORROW, "07:30") },
+  { group: "reminder", text: "cancel the bank reminder", expect: "cancel the bank reminder", check: (o) => o.kind === "reminder_action" && o.action === "cancel" && o.id === bankReminder },
   { group: "reminder", text: "remind me on Friday at 4pm to submit the application", expect: "reminder Fri 6 Nov 16:00", check: (o) => o.kind === "reminder" && o.dueMs === istWallToMs("2026-11-06", "16:00") },
   { group: "reminder", text: "remind me on 15 Nov at 6pm to pay rent", expect: "reminder Sun 15 Nov 18:00", check: (o) => o.kind === "reminder" && o.dueMs === istWallToMs("2026-11-15", "18:00") },
   // plan edits (today: gym day)

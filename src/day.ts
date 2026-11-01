@@ -10,6 +10,7 @@ import { bedtimeFor, draftDay } from "./plan.ts";
 import type { DayKind, DraftDay, OverrideKind, Place, PlanInput, PlanReading, PlanUnit } from "./plan.ts";
 import { currentReading } from "./reading.ts";
 import { proteinFor, weeklyFitnessParts } from "./fitness.ts";
+import { eveningOpenLines, morningTaskLine } from "./reminders.ts";
 import { queryPlan } from "./seed.ts";
 import { addDays, dateLabel, dayNumber, weekStart, weekdayIndex } from "./time.ts";
 
@@ -233,7 +234,7 @@ function bedtimeLine(db: Db, date: string): string {
 }
 
 /** The 21:30 message: how today went, and tomorrow as it will be locked. */
-export function renderEvening(db: Db, today: string): string {
+export function renderEvening(db: Db, today: string, nowMs = Date.now()): string {
   const tomorrow = addDays(today, 1);
   const todays = loadItems(db, today);
   const recap = todays.length === 0
@@ -243,6 +244,7 @@ export function renderEvening(db: Db, today: string): string {
   const lines = [`🌙 <b>${dateLabel(today)}</b>`, recap];
   const weekly = weeklyLine(db, today);
   if (weekly) lines.push(`<i>${weekly}</i>`);
+  lines.push(...eveningOpenLines(db, today, nowMs));
   const protein = proteinFor(db, today);
   lines.push(protein === null ? "🥩 Protein today? Reply e.g. <b>protein 110</b>." : `🥩 Protein ${protein} g`);
   lines.push("", `<b>Tomorrow — ${dateLabel(tomorrow)}</b>`, renderDayBlock(db, tomorrow));
@@ -259,7 +261,8 @@ export function renderMorning(db: Db, date: string): string {
   const slept = sleepNights(db, date, date)[0];
   const sleepLine = slept ? `
 <i>😴 slept ${formatHours(slept.hours)}</i>` : "";
-  return [`☀️ <b>${dateLabel(date)}</b>${mark}${sleepLine}`, renderDayBlock(db, date), "", `<i>Tell me as you go: "done with gym", "skip reading", "feeling low". /plan to see this again.</i>`].join("\n");
+  const tasks = morningTaskLine(db, date);
+  return [`☀️ <b>${dateLabel(date)}</b>${mark}${sleepLine}`, renderDayBlock(db, date), ...(tasks ? [tasks] : []), "", `<i>Tell me as you go: "done with gym", "skip reading", "feeling low". /plan to see this again.</i>`].join("\n");
 }
 
 export function renderPlan(db: Db, date: string): string {

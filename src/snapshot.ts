@@ -13,7 +13,7 @@ import { addDays, calendarDate, dateLabel, dayKey } from "./time.ts";
 const clip = (s: string, n = 90) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
 /** Intent -> the event lane whose recent history is worth showing. */
-const EVENT_LANE: Partial<Record<Intent, string>> = { reading: "reading", study_done: "study", workout: "fitness" };
+const EVENT_LANE: Partial<Record<Intent, string>> = { reading: "reading", jot: "reading", progress: "reading", study_done: "study", workout: "fitness" };
 
 export function buildSnapshot(db: Db, intent: Intent, nowMs: number): string {
   const lines: string[] = [`Now: ${istNowLabel(nowMs)}.`];
@@ -42,6 +42,11 @@ export function buildSnapshot(db: Db, intent: Intent, nowMs: number): string {
         if (items.length > 0) lines.push(`${d === base ? "Today" : "Tomorrow"}: ${items.map((i) => `${clip(i.title, 50)} [${i.status}]`).join("; ")}.`);
       }
     }
+  }
+
+  if (intent === "jot" || intent === "progress") {
+    const now = currentReading(db);
+    lines.push(now.length > 0 ? `Reading now: ${now.map((r) => clip(r.title, 60)).join("; ")}.` : "Reading now: nothing.");
   }
 
   if (intent === "reading") {

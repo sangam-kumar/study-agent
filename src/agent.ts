@@ -42,6 +42,7 @@ import {
   recordAgentMessage, recordNudgeAnswer, recordNudgeSent, shouldAskPause,
 } from "./nudge.ts";
 import { renderWeekly } from "./weekly.ts";
+import { booksWithJots, findBook, jotKind as jotKindOf, notesPath, parseJotText, renderJots, renderNotesMarkdown, soleCurrentBook } from "./jots.ts";
 
 /** Processed-update rows older than this are pruned; replays beyond it are not a concern. */
 const PROCESSED_UPDATE_TTL_MS = 7 * 24 * 3600 * 1000;
@@ -408,6 +409,23 @@ Total queued articles: <b>${count}</b>`
       return;
     }
 
+    // "ch3: …" / "jot: …" / "finished ch3" / "on p140" about the one book being read: no model.
+    const jot = parseJotText(text);
+    const sole = jot ? soleCurrentBook(db) : null;
+    if (jot && sole) {
+      const op = jot.kind === "jot"
+        ? { type: "add_jot", reading_id: sole.id, text: jot.text, locator: jot.locator ?? undefined, kind: jotKindOf(jot.text) }
+        : { type: "set_progress", reading_id: sole.id, locator: jot.locator, date: today };
+      try {
+        const res = this.applyPlanOp(op, { source: "telegram", raw: text });
+        await telegram.sendMessage(chatId, `📝 ${escapeHtml(res.summary)}\n<i>/jots to see them · /undo to reverse</i>`);
+      } catch (err) {
+        if (!(err instanceof OpError)) throw err;
+        await telegram.sendMessage(chatId, `⚠️ ${escapeHtml(err.message)}`);
+      }
+      return;
+    }
+
     // Sets typed in the notation ("bench 20x15, 22.5x12"): read by code, no model.
     const typed = parseChatWorkout(db, text, nowMs);
     if (typed) {
@@ -589,9 +607,13 @@ Total queued articles: <b>${count}</b>`
     const today = dayKey(nowMs);
     try {
       const gh = new GitHubClient(token, repo, getConfig(db, "mirror_branch", "master"));
-      const r = await mirrorDays(db, gh, [addDays(today, -1), today, addDays(today, 1)], nowMs);
+      const notes = booksWithJots(db).flatMap((b) => {
+        const content = renderNotesMarkdown(db, b.id);
+        return content ? [{ path: notesPath(b.title), label: b.title, content }] : [];
+      });
+      const r = await mirrorDays(db, gh, [addDays(today, -1), today, addDays(today, 1)], nowMs, notes);
       if (r.committed) recordEvent(db, "mirror", null, { paths: r.paths, sha: r.sha }, nowMs);
-      return r.committed ? `Wrote ${r.paths.length} daily note(s) to study-repo: ${r.paths.join(", ")}` : "Daily notes are up to date.";
+      return r.committed ? `Wrote ${r.paths.length} file(s) to study-repo: ${r.paths.join(", ")}` : "study-repo is up to date.";
     } catch (err) {
       console.error("mirror failed:", err);
       recordEvent(db, "mirror_failed", null, { error: String(err).slice(0, 300) }, nowMs);
@@ -753,6 +775,7 @@ Total queued articles: <b>${count}</b>`
           "• <code>/tracks</code> - Where each study track is",
           "• <code>/books</code> - What you're reading and what to pick next",
           "• <code>/book add|start|keep|hold|done|drop</code> - Manage the shelf by id or title",
+          "• While reading: <i>ch3: lag breaks read-your-writes</i> (a jot) · <i>on p140</i> · <i>finished ch3</i>. <code>/jots</code> shows them; they're also written to study/notes/&lt;book&gt;.md",
           "",
           "⏰ <b>Reminders &amp; other</b>",
           "• <i>remind me Friday 4pm to call the bank</i> · <i>every Monday 9am review the week</i> · <i>submit the form by Friday</i> (no time = on your list, no ping)",
@@ -971,6 +994,22 @@ Total queued articles: <b>${count}</b>`
           break;
         }
         await telegram.sendMessage(chatId, this.applyOfficeDays(days));
+        break;
+      }
+
+      case "/jots": {
+        const db = doDb(this.ctx);
+        const ref = args.join(" ").trim();
+        const sole = soleCurrentBook(db);
+        const book = ref ? findBook(db, ref) : sole ? { id: sole.id, title: sole.title } : null;
+        if (!book) {
+          const any = booksWithJots(db);
+          await telegram.sendMessage(chatId, any.length
+            ? `📝 Jots on: ${any.map((b) => escapeHtml(b.title)).join(" · ")}\n<i>/jots &lt;part of the title&gt;</i>`
+            : "📝 No jots yet. While reading, send <i>ch3: what struck you</i>.");
+          break;
+        }
+        await telegram.sendMessage(chatId, "reply" in book ? book.reply : renderJots(db, book.id));
         break;
       }
 

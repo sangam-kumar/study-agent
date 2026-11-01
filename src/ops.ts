@@ -24,6 +24,7 @@ const MAX_NOTE_TTL_DAYS = 30;
 
 export const SET_KINDS = ["warmup", "working", "drop", "failure"] as const;
 export const METRICS = ["protein_g"] as const;
+export const JOT_KINDS = ["point", "quote", "question", "connection", "todo"] as const;
 
 export type Lane = (typeof LANES)[number];
 
@@ -62,6 +63,9 @@ export type Op =
   /** One chunk of a workout. append adds sets; replace swaps the named exercises' sets ("actually it was ..."). */
   | { type: "log_workout"; date: string; mode: "append" | "replace"; exercises: { name: string; sets: SetInput[] }[]; notes?: string; pain?: string }
   | { type: "log_metric"; date: string; metric: (typeof METRICS)[number]; value: number }
+  | { type: "add_jot"; reading_id: number; text: string; locator?: string; kind?: (typeof JOT_KINDS)[number] }
+  /** "on p140" / "ch3 done": the book's place; also ticks off that day's reading item for the book. */
+  | { type: "set_progress"; reading_id: number; locator: string; date: string }
   | { type: "note"; text: string };
 
 export class OpError extends Error {
@@ -254,6 +258,16 @@ export function validateOp(input: unknown): Op {
       if (value === null) fail("value is required");
       return { type: "log_metric", date: date(o, "date"), metric: oneOf(o, "metric", METRICS), value };
     }
+    case "add_jot":
+      return {
+        type: "add_jot",
+        reading_id: int(o, "reading_id", 1),
+        text: str(o, "text", 2000),
+        locator: optStr(o, "locator", 40),
+        kind: o.kind === undefined || o.kind === null ? undefined : oneOf(o, "kind", JOT_KINDS),
+      };
+    case "set_progress":
+      return { type: "set_progress", reading_id: int(o, "reading_id", 1), locator: str(o, "locator", 40), date: date(o, "date") };
     case "note":
       return { type: "note", text: str(o, "text", 1000) };
     default:
@@ -677,6 +691,27 @@ const HANDLERS: { [K in Op["type"]]: (h: HandlerCtx, op: Extract<Op, { type: K }
     if (cur) h.rec.update("metric_log", cur.id as number, { value: op.value, ts: iso(h.now) });
     else h.rec.insert("metric_log", { date: op.date, metric: op.metric, value: op.value, ts: iso(h.now) });
     return { lane: "fitness", refId: op.date, summary: `Protein ${op.date}: ${op.value} g` };
+  },
+
+  add_jot(h, op) {
+    const r = requireReading(h, op.reading_id);
+    const id = h.rec.insert("jot", {
+      reading_id: op.reading_id, locator: op.locator ?? null, text: op.text, kind: op.kind ?? "point", created_at: iso(h.now),
+    });
+    const short = op.text.length > 60 ? `${op.text.slice(0, 59)}…` : op.text;
+    return { lane: "reading", refId: id, summary: `Jot on ${r.title}${op.locator ? ` (${op.locator})` : ""}: ${short}` };
+  },
+
+  set_progress(h, op) {
+    const r = requireReading(h, op.reading_id);
+    h.rec.update("reading_item", op.reading_id, { progress: op.locator });
+    // Reading it today counts as today's reading.
+    const item = h.db.all<Row>("SELECT * FROM plan_item WHERE date = ? AND ref = ? AND status = 'planned'", op.date, `reading:${op.reading_id}`)[0];
+    if (item) {
+      h.rec.update("plan_item", item.id as number, { status: "done" });
+      touchDay(h, op.date);
+    }
+    return { lane: "reading", refId: op.reading_id, summary: `${r.title}: ${op.locator}` };
   },
 
   note(_h, op) {

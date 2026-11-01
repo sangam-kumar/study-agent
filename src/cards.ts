@@ -8,13 +8,15 @@ You only translate the user's message into the requested JSON. You never decide 
 If the message is unclear, lower your confidence instead of guessing.
 Be brief.`;
 
-export type Intent = "plan" | "override" | "reading" | "study_done" | "reminder" | "note" | "workout" | "snooze" | "chat";
-export const INTENTS: readonly Intent[] = ["plan", "override", "reading", "study_done", "reminder", "note", "workout", "snooze", "chat"];
+export type Intent = "plan" | "override" | "reading" | "jot" | "progress" | "study_done" | "reminder" | "note" | "workout" | "snooze" | "chat";
+export const INTENTS: readonly Intent[] = ["plan", "override", "reading", "jot", "progress", "study_done", "reminder", "note", "workout", "snooze", "chat"];
 
 export const CLASSIFY_CARD = `Classify the message into exactly one intent:
 - plan: mark an item of today's or tomorrow's plan done or skipped, add a task to a day, or move an item to another day ("done with gym", "skip reading today", "add call mom tomorrow", "move DSA to Saturday").
 - override: the user's circumstances change for some days: travelling, sick, out for the day, feeling low ("travelling Fri to Sun", "down with fever", "out all day tomorrow", "feeling low today").
-- reading: add, start, keep, pause, finish or drop a book/article ("done with the ML book", "drop Sapiens, boring", "add Deep Work by Cal Newport").
+- reading: add, start, keep, pause / put on hold, finish or drop a whole book/article ("done with the ML book", "pause DDIA for now", "drop Sapiens, boring", "add Deep Work by Cal Newport").
+- jot: a thought, quote, question or takeaway about something being read ("ch3: leader replication lag breaks read-your-writes", "interesting point in DDIA about quorums").
+- progress: a chapter or page reached in a book ("finished chapter 3 of DDIA", "on page 140 of SICP"). Pausing, finishing or dropping the whole book is reading.
 - study_done: finished study work that is NOT simply today's planned item (e.g. "did 3 DSA problems").
 - reminder: remind me / alert me at a time or after a delay, a task due by a day, a repeating reminder, or cancelling one.
 - note: a short thing to remember for a few days ("my knee hurts, go easy on legs").
@@ -38,6 +40,13 @@ action: add | start | keep | hold | done | drop.
 ref: a distinctive part of the title as the user said it, or the title for add. Use the shelf below to expand vague words ("the ML book").
 author: only for add. reason: only for drop, in the user's words.
 "finished", "read", "completed" = done. "pause", "later", "put on hold" = hold. "boring", "quit", "not for me" = drop.`,
+
+  jot: `A jot about something being read. book: part of its title as the user said it, or empty for the book being read now.
+locator: where in it ("ch3", "p120", "12:40") only if the user said it, else empty; never guess one. text: the thought in the user's words, without the locator or the book name.
+kind: point | quote (their exact quote of the book) | question | connection (links to something else) | todo (something to look up).`,
+
+  progress: `Reading progress. book: part of its title as the user said it, or empty for the book being read now.
+locator: "ch3 done" for a finished chapter, "p140" for a page, "ch4" for a chapter started. finished_book: true only if the whole book is finished.`,
 
   study_done: `Study progress. Pick which list the user advanced from the lists below and how many units they finished (default 1).
 list_id must be one of the ids shown. If you cannot tell which list, lower your confidence.`,

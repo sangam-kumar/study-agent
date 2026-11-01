@@ -45,7 +45,7 @@ const seed = (f: string) => JSON.parse(readFileSync(`../study-repo/seed/${f}`, "
 loadConfigSeed(db, seed("config.json"), now);
 loadStudySeed(db, seed("study.json"), now);
 loadReadingSeed(db, seed("reading.json"), now);
-const ddia = db.all<{ id: number }>("SELECT id FROM reading_item WHERE title LIKE 'Designing Data-Intensive%'")[0].id;
+const ddia = db.all<{ id: number }>("SELECT id FROM reading_item WHERE title = 'Designing Data-Intensive Applications (DDIA)'")[0].id;
 applyOp(db, { type: "start_reading", reading_id: ddia }, { now });
 ensureDraft(db, TODAY, nowMs);
 ensureDraft(db, TOMORROW, nowMs);
@@ -90,6 +90,11 @@ const cases: Case[] = [
   { group: "override", text: "down with a fever", expect: "SICK from today", check: isOp("set_override", { override_type: "SICK", start_date: TODAY }) },
   { group: "override", text: "feeling low today", expect: "LOW_MOOD today", check: isOp("set_override", { override_type: "LOW_MOOD", start_date: TODAY, end_date: TODAY }) },
   { group: "override", text: "out all day tomorrow", expect: "OUT tomorrow", check: isOp("set_override", { override_type: "OUT", start_date: TOMORROW, end_date: TOMORROW }) },
+  // jots and progress (DDIA is the one book being read)
+  { group: "jot", text: "ch5 of DDIA: replication lag breaks read-your-writes", expect: "jot on DDIA at ch5", check: (o) => ops(o).length === 1 && ops(o)[0].type === "add_jot" && ops(o)[0].reading_id === ddia && ops(o)[0].locator === "ch5" },
+  { group: "jot", text: "interesting point in the book about quorums needing w plus r greater than n", expect: "jot on the current book", check: (o) => ops(o)[0]?.type === "add_jot" && ops(o)[0].reading_id === ddia },
+  { group: "jot", text: "finished chapter 3 of DDIA", expect: "progress ch3 done (not the whole book)", check: isOp("set_progress", { reading_id: ddia, locator: "ch3 done" }) },
+  { group: "jot", text: "I'm on page 140 of designing data intensive applications", expect: "progress p140", check: isOp("set_progress", { reading_id: ddia, locator: "p140" }) },
   // study, note, workout, snooze, chat, vague
   { group: "study", text: "did 3 DSA problems", expect: "advance dsa to 4", check: isOp("advance_pointer", { list_id: "dsa", to_ordinal: 4 }), workers: true },
   { group: "note", text: "my knee hurts, go easy on legs this week", expect: "add_note", check: isOp("add_note", { text: has("knee") }) },

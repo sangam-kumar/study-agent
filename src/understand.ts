@@ -10,6 +10,7 @@ import type { Intent } from "./cards.ts";
 import { InferError, ValidationError, infer } from "./infer.ts";
 import type { InferBackend, JsonSchema } from "./infer.ts";
 import { parseBookCommand } from "./reading.ts";
+import { findBook, jotKind, normalizeLocator, soleCurrentBook } from "./jots.ts";
 import { ReminderTimeError, resolveDelayMinutes } from "./reminder-time.ts";
 import { firstOccurrence, parseRepeat, resolveReminder } from "./reminders.ts";
 import { buildSnapshot } from "./snapshot.ts";
@@ -131,6 +132,16 @@ const EXTRACT_SCHEMAS: Record<Intent, JsonSchema> = {
     },
     ["action", "ref"],
   ),
+  jot: S(
+    {
+      book: { type: "string" },
+      locator: { type: "string" },
+      text: { type: "string" },
+      kind: { type: "string", enum: ["point", "quote", "question", "connection", "todo"] },
+    },
+    ["text"],
+  ),
+  progress: S({ book: { type: "string" }, locator: { type: "string" }, finished_book: { type: "boolean" } }, ["locator"]),
   study_done: S(
     { list_id: { type: "string" }, count: { type: "number", description: "units finished, default 1" } },
     ["list_id"],
@@ -233,6 +244,36 @@ const LANE_HANDLERS: Record<Intent, (db: Db, nowMs: number) => { validate: (raw:
       const rest = v.action === "add" ? (v.author ? `${v.ref} | ${v.author}` : v.ref) : v.action === "drop" ? `${v.ref} | ${v.reason ?? ""}` : v.ref;
       const cmd = parseBookCommand(db, [v.action, rest]);
       return "op" in cmd ? { kind: "ops", ops: [cmd.op] } : { kind: "reply", html: cmd.reply };
+    },
+  }),
+
+  jot: (db) => ({
+    validate: (raw) => {
+      const o = asObj(raw);
+      const kind = o.kind === undefined || o.kind === null || o.kind === "" ? undefined : oneOf(o, "kind", ["point", "quote", "question", "connection", "todo"] as const);
+      return { book: optStr(o, "book", 200), locator: optStr(o, "locator", 40), text: str(o, "text", 2000), kind };
+    },
+    map: (v: { book?: string; locator?: string; text: string; kind?: string }): Outcome => {
+      const book = whichBook(db, v.book);
+      if ("reply" in book) return { kind: "reply", html: book.reply };
+      return {
+        kind: "ops",
+        ops: [{ type: "add_jot", reading_id: book.id, text: v.text, locator: v.locator ? normalizeLocator(v.locator) : undefined, kind: v.kind ?? jotKind(v.text) }],
+      };
+    },
+  }),
+
+  progress: (db, nowMs) => ({
+    validate: (raw) => {
+      const o = asObj(raw);
+      return { book: optStr(o, "book", 200), locator: str(o, "locator", 40), finished: o.finished_book === true };
+    },
+    map: (v: { book?: string; locator: string; finished: boolean }): Outcome => {
+      const book = whichBook(db, v.book);
+      if ("reply" in book) return { kind: "reply", html: book.reply };
+      if (v.finished) return { kind: "ops", ops: [{ type: "finish_reading", reading_id: book.id }] };
+      const loc = v.locator.replace(/^(.*?)(\s+done)?$/i, (_m, a: string, d?: string) => `${normalizeLocator(a)}${d ? " done" : ""}`);
+      return { kind: "ops", ops: [{ type: "set_progress", reading_id: book.id, locator: loc, date: dayKey(nowMs) }] };
     },
   }),
 
@@ -343,6 +384,14 @@ const LANE_HANDLERS: Record<Intent, (db: Db, nowMs: number) => { validate: (raw:
     map: (v: { reply: string }): Outcome => ({ kind: "reply", html: esc(v.reply) }),
   }),
 };
+
+/** The named book, or the one being read now when none is named. */
+function whichBook(db: Db, ref: string | undefined): { id: number; title: string } | { reply: string } {
+  if (ref) return findBook(db, ref);
+  const cur = soleCurrentBook(db);
+  if (cur) return { id: cur.id, title: cur.title };
+  return { reply: "Which book is that for? Say e.g. <i>DDIA ch3: …</i>, or start one with /books." };
+}
 
 // --------------------------------------------------------------------- pipeline
 

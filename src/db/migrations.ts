@@ -287,6 +287,22 @@ UPDATE reminders SET text = json_extract(payload_json, '$.text') WHERE text IS N
 CREATE INDEX IF NOT EXISTS idx_reminders_status ON reminders(status, trigger_at);
 `;
 
+// Jots (spec §15b stage 1): what you noticed while reading, attached to the book, with where you were.
+// progress is the latest "on p140" / "ch3 done" for a book.
+const V8_SQL = `
+CREATE TABLE IF NOT EXISTS jot (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  reading_id INTEGER REFERENCES reading_item(id),
+  unit_id INTEGER REFERENCES unit(id),
+  locator TEXT,
+  text TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'point' CHECK(kind IN ('point','quote','question','connection','todo')),
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_jot_reading ON jot(reading_id, id);
+ALTER TABLE reading_item ADD COLUMN progress TEXT;
+`;
+
 export interface Migration {
   version: number;
   name: string;
@@ -303,6 +319,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 5, name: "repo mirror state", sql: V5_SQL },
   { version: 6, name: "fitness lane: sessions, exercises, sets, metrics", sql: V6_SQL, run: (db) => void migrateV1Workouts(db) },
   { version: 7, name: "reminders v2: tasks, repeats, follow-up", sql: V7_SQL },
+  { version: 8, name: "jots and reading progress", sql: V8_SQL },
 ];
 
 /** Apply any migration not yet recorded. Safe on a database that predates schema_migrations. */

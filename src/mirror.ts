@@ -82,16 +82,30 @@ export interface MirrorResult {
   sha?: string;
 }
 
-/** Writes the changed days among `dates` in one commit and remembers what was written. */
-export async function mirrorDays(db: Db, gh: Pick<GitHubClient, "commit">, dates: string[], nowMs: number): Promise<MirrorResult> {
-  const pending: { date: string; path: string; block: string; hash: string }[] = [];
+/** A file the agent owns outright (e.g. study/notes/<book>.md): written whole, never merged. */
+export interface WholeFile {
+  path: string;
+  label: string;
+  content: string;
+}
+
+/**
+ * Writes the changed days among `dates`, and any changed whole files, in one commit and remembers
+ * what was written.
+ */
+export async function mirrorDays(db: Db, gh: Pick<GitHubClient, "commit">, dates: string[], nowMs: number, whole: WholeFile[] = []): Promise<MirrorResult> {
+  const last = (path: string) => db.all<{ hash: string }>("SELECT hash FROM mirror_state WHERE path = ?", path)[0]?.hash;
+  const pending: { path: string; hash: string; label: string; kind: "daily" | "whole"; build: (before: string | null) => string }[] = [];
   for (const date of dates) {
     const block = renderDailyBlock(db, date);
     if (!block) continue;
     const path = dailyPath(date);
     const hash = contentHash(block);
-    const last = db.all<{ hash: string }>("SELECT hash FROM mirror_state WHERE path = ?", path)[0]?.hash;
-    if (last !== hash) pending.push({ date, path, block, hash });
+    if (last(path) !== hash) pending.push({ path, hash, label: dateLabel(date), kind: "daily", build: (before) => mergeIntoNote(before, date, block) });
+  }
+  for (const f of whole) {
+    const hash = contentHash(f.content);
+    if (last(f.path) !== hash) pending.push({ path: f.path, hash, label: f.label, kind: "whole", build: () => f.content });
   }
   if (pending.length === 0) return { committed: false, paths: [] };
 
@@ -99,10 +113,12 @@ export async function mirrorDays(db: Db, gh: Pick<GitHubClient, "commit">, dates
     const files = [];
     for (const p of pending) {
       const before = await read(p.path);
-      const after = mergeIntoNote(before, p.date, p.block);
+      const after = p.build(before);
       if (after !== before) files.push({ path: p.path, content: after });
     }
-    const message = `daily: ${pending.map((p) => dateLabel(p.date)).join(", ")} [study-agent]`;
+    const days = pending.filter((p) => p.kind === "daily").map((p) => p.label);
+    const notes = pending.filter((p) => p.kind === "whole").map((p) => p.label);
+    const message = `${[days.length ? `daily: ${days.join(", ")}` : "", notes.length ? `notes: ${notes.join(", ")}` : ""].filter(Boolean).join("; ")} [study-agent]`;
     return { message, files };
   });
 

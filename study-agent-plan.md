@@ -230,18 +230,18 @@ flowchart TD
 ### Phase 14: Nudges, reminders v2, weekly, jots [W6, W7, W8, J1]
 * **Phase Doc:** `docs/phase-14-nudges-weekly.md`
 * **Sub-steps:**
-  - [ ] 14.1: Nudge budget (≤3 agent messages/day, quiet 22:30→wake, quiet-after-2-ignored, "pause or resume?").
-  - [~] 14.2: Reminders v2 (extends the v1 `reminders` table).
+  - [x] 14.1: Nudge budget (≤3 agent messages/day, quiet 22:30→wake, quiet-after-2-ignored, "pause or resume?"); one nudge type (closure at 18:00).
+  - [x] 14.2: Reminders v2 (extends the v1 `reminders` table).
     - [x] Absolute due time: scheduled at the exact instant (`scheduleReminderAt`), not "N minutes after the model answered".
     - [x] Any date and time up to 60 days ("tomorrow 7am", "Friday 4pm", "15 Nov 6pm"); the reminder extractor gets the calendar.
     - [x] Readable confirmation and `/reminders` list: "today 6:30 pm (in 4 h 30 min)", "Fri 6 Nov, 4:00 pm (in 5 days)".
     - [x] Marked sent only after Telegram accepts it; a failed send throws so the scheduler retries. Reset cancels both delayed and dated reminder alarms.
-    - [ ] Repeat rule ("every Monday 9am").
-    - [ ] Date-only tasks ("submit by Friday") shown in the morning brief and evening recap instead of a ping.
-    - [ ] Done / Snooze 1h / Tomorrow buttons; one repeat after 30 min if unanswered, then "still open" in the evening recap.
-    - [ ] Cancel / edit a reminder ("cancel the bank reminder"); duplicate check.
-  - [ ] 14.3: Sunday weekly summary from events (targets, sleep average, office-day question).
-  - [ ] 14.4: `jot` + `progress` intents; `study/notes/<slug>.md` projection.
+    - [x] Repeat rule ("every Monday 9am", "weekdays 7:30", "daily").
+    - [x] Date-only tasks ("submit by Friday") shown in the morning brief and evening recap instead of a ping.
+    - [x] Done / Snooze 1h / Tomorrow buttons; one repeat after 30 min if unanswered, then "still open" in the evening recap.
+    - [x] Cancel a reminder ("cancel the bank reminder", /cancel, /done); duplicate check. Edit = cancel + set again.
+  - [x] 14.3: Sunday weekly summary from events (targets, sleep average, office-day question); month on the first Sunday; `/week`.
+  - [x] 14.4: `jot` + `progress` intents; `study/notes/<slug>.md` projection; `/jots`.
 * **Check:** see reform-plan §6 acceptance table.
 
 ### Order of execution

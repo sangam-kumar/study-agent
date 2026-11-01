@@ -4,21 +4,23 @@
 //   evening  21:30 IST  recap + tomorrow's draft
 //   lock     23:00 IST  tomorrow locks itself if you said nothing
 //   morning  fallback brief at 09:30 weekdays / 10:30 weekends, only if you haven't woken it up
+//   nudge    18:00 IST  one check-in on an open gym/study item, if the budget allows (nudge.ts)
 
 import { addDays, calendarDate, dayKey, istWallToMs, weekdayIndex } from "./time.ts";
 
-export type JobKind = "evening" | "lock" | "morning";
-export const JOB_KINDS: readonly JobKind[] = ["evening", "lock", "morning"];
-export const JOB_CALLBACK = { evening: "jobEvening", lock: "jobLock", morning: "jobMorning" } as const;
+export type JobKind = "evening" | "lock" | "morning" | "nudge";
+export const JOB_KINDS: readonly JobKind[] = ["evening", "lock", "morning", "nudge"];
+export const JOB_CALLBACK = { evening: "jobEvening", lock: "jobLock", morning: "jobMorning", nudge: "jobNudge" } as const;
 
 export interface JobTimes {
   evening: string;
   lock: string;
   morningWeekday: string;
   morningWeekend: string;
+  nudge: string;
 }
 
-export const DEFAULT_TIMES: JobTimes = { evening: "21:30", lock: "23:00", morningWeekday: "09:30", morningWeekend: "10:30" };
+export const DEFAULT_TIMES: JobTimes = { evening: "21:30", lock: "23:00", morningWeekday: "09:30", morningWeekend: "10:30", nudge: "18:00" };
 
 /** Next daily occurrence of an IST wall-clock time strictly after nowMs. */
 function nextDaily(nowMs: number, hhmm: string): number {
@@ -35,6 +37,7 @@ function morningFor(date: string, t: JobTimes): number {
 export function nextRun(kind: JobKind, nowMs: number, t: JobTimes, briefSentToday = false): number {
   if (kind === "evening") return nextDaily(nowMs, t.evening);
   if (kind === "lock") return nextDaily(nowMs, t.lock);
+  if (kind === "nudge") return nextDaily(nowMs, t.nudge);
   const today = dayKey(nowMs);
   const candidate = morningFor(today, t);
   return !briefSentToday && candidate > nowMs ? candidate : morningFor(addDays(today, 1), t);

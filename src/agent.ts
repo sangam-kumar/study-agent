@@ -37,6 +37,11 @@ import {
   closeOpenSessions, findRepeat, importGymLog, parseChatWorkout, parseProtein, renderGymWeek, renderLiftHistory, renderSession,
 } from "./fitness.ts";
 import type { LogWorkoutOp } from "./fitness.ts";
+import {
+  NUDGE_BUTTONS, PAUSE_BUTTONS, SILENT_MUTE_DAYS, closeIgnoredNudge, nudgeGate, nudgeStatus, nudgeText, pauseQuestion, pickNudge,
+  recordAgentMessage, recordNudgeAnswer, recordNudgeSent, shouldAskPause,
+} from "./nudge.ts";
+import { renderWeekly } from "./weekly.ts";
 
 /** Processed-update rows older than this are pruned; replays beyond it are not a concern. */
 const PROCESSED_UPDATE_TTL_MS = 7 * 24 * 3600 * 1000;
@@ -71,6 +76,7 @@ export class StudyAgent extends Agent<Env> {
       lock: getConfig(db, "auto_lock", DEFAULT_TIMES.lock),
       morningWeekday: getConfig(db, "morning_fallback_weekday", DEFAULT_TIMES.morningWeekday),
       morningWeekend: getConfig(db, "morning_fallback_weekend", DEFAULT_TIMES.morningWeekend),
+      nudge: getConfig(db, "nudge_time", DEFAULT_TIMES.nudge),
     };
   }
 
@@ -281,6 +287,8 @@ export class StudyAgent extends Agent<Env> {
 
   private async processTelegramUpdate(update: any): Promise<void> {
     console.log("StudyAgent received Telegram update:", JSON.stringify(update));
+
+    this.endSilentQuiet();
 
     if (update.callback_query) {
       await this.handleCallback(update.callback_query);
@@ -560,6 +568,7 @@ Total queued articles: <b>${count}</b>`
     if (loadDayRow(db, today)?.status !== "locked") lockDay(db, today, "auto", nowMs);
     await telegram.sendMessage(chatId, renderMorning(db, today));
     if (trigger !== "manual") recordEvent(db, "morning_brief", today, { trigger }, nowMs);
+    if (trigger === "fallback") recordAgentMessage(db, "morning", nowMs);
   }
 
   private telegramAndChat(): { telegram: TelegramClient; chatId: string } | null {
@@ -624,15 +633,28 @@ Total queued articles: <b>${count}</b>`
   /** 21:30: recap today, draft tomorrow. */
   async jobEvening(_payload: string): Promise<void> {
     try {
-      const t = this.telegramAndChat();
-      if (!t || this.isCurrentlySnoozed()) return;
       const db = doDb(this.ctx);
       const nowMs = Date.now();
       const today = dayKey(nowMs);
-      const officeLine = weekdayIndex(today) === 6 ? this.officeDefaultForNextWeek(today) : "";
+      closeIgnoredNudge(db, today, nowMs);
+      const t = this.telegramAndChat();
+      if (!t || this.isCurrentlySnoozed()) return;
       ensureDraft(db, addDays(today, 1), nowMs);
-      await t.telegram.sendMessage(t.chatId, `${renderEvening(db, today)}${officeLine ? `\n\n${officeLine}` : ""}`);
+
+      // Two days without a word: ask once, then go quiet until you write (the day loop keeps running).
+      if (shouldAskPause(db, nowMs)) {
+        await t.telegram.sendMessage(t.chatId, pauseQuestion(db, nowMs), "HTML", PAUSE_BUTTONS);
+        recordAgentMessage(db, "pause_check", nowMs);
+        this.setSnooze(SILENT_MUTE_DAYS * 24, "silent");
+        return;
+      }
+
+      const sunday = weekdayIndex(today) === 6;
+      const officeLine = sunday ? this.officeDefaultForNextWeek(today) : "";
+      const weekly = sunday ? `\n\n${renderWeekly(db, today)}` : "";
+      await t.telegram.sendMessage(t.chatId, `${renderEvening(db, today)}${weekly}${officeLine ? `\n\n${officeLine}` : ""}`);
       recordEvent(db, "evening_recap", today, {}, nowMs);
+      recordAgentMessage(db, "evening", nowMs);
     } catch (err) {
       console.error("jobEvening failed:", err);
     } finally {
@@ -650,6 +672,29 @@ Total queued articles: <b>${count}</b>`
       await this.mirror();
     } catch (err) {
       console.error("jobLock failed:", err);
+    } finally {
+      await this.ensureJobs();
+    }
+  }
+
+  /** 18:00: one check-in on the first open gym/study item, only if the budget and quiet rules allow it. */
+  async jobNudge(_payload: string): Promise<void> {
+    try {
+      const t = this.telegramAndChat();
+      if (!t) return;
+      const db = doDb(this.ctx);
+      const nowMs = Date.now();
+      const gate = nudgeGate(db, nowMs);
+      if (!gate.ok) {
+        console.log(`nudge skipped: ${gate.reason}`);
+        return;
+      }
+      const item = pickNudge(db, dayKey(nowMs));
+      if (!item) return;
+      await t.telegram.sendMessage(t.chatId, nudgeText(item), "HTML", NUDGE_BUTTONS(item.id));
+      recordNudgeSent(db, item, nowMs);
+    } catch (err) {
+      console.error("jobNudge failed:", err);
     } finally {
       await this.ensureJobs();
     }
@@ -715,7 +760,8 @@ Total queued articles: <b>${count}</b>`
           "• <code>/reminders</code> · <code>/done &lt;id&gt;</code> · <code>/cancel &lt;id&gt;</code> (or <i>cancel the bank reminder</i>) · <code>/remind &lt;minutes&gt; &lt;text&gt;</code>",
           "• <code>/inbox</code> - Messages I wasn't sure about (<code>/inbox done &lt;id&gt;</code>)",
           "• <code>/snooze &lt;hours&gt;</code> · <code>/unsnooze</code> - Pause my messages (your reminders still fire)",
-          "• <code>/jobs</code> · <code>/testcue evening|lock|morning</code> · <code>/status</code> · <code>/queue</code> · <code>/recent</code>",
+          "• <code>/week</code> - The week so far (Sunday's evening message has the full one) · <code>/nudges</code> - What I send on my own, <code>/nudges off</code>",
+          "• <code>/jobs</code> · <code>/testcue evening|lock|morning|nudge</code> · <code>/status</code> · <code>/queue</code> · <code>/recent</code>",
           "",
           "💬 <b>Or just say it</b> (text or voice):",
           "• <i>done with gym</i> · <i>skip reading today</i> · <i>add call mom tomorrow</i> · <i>move DSA to Saturday</i>",
@@ -928,6 +974,22 @@ Total queued articles: <b>${count}</b>`
         break;
       }
 
+      case "/nudges": {
+        const db = doDb(this.ctx);
+        const want = (args[0] ?? "").toLowerCase();
+        if (want === "on" || want === "off") this.applyPlanOp({ type: "set_config", key: "nudges", value: want }, { source: "telegram" });
+        await telegram.sendMessage(chatId, nudgeStatus(db, Date.now()));
+        break;
+      }
+
+      case "/week": {
+        const db = doDb(this.ctx);
+        const today = dayKey(Date.now());
+        // This week so far, or a full week when it's Sunday.
+        await telegram.sendMessage(chatId, renderWeekly(db, addDays(today, 6 - weekdayIndex(today))));
+        break;
+      }
+
       case "/gym": {
         const db = doDb(this.ctx);
         const today = dayKey(Date.now());
@@ -1000,7 +1062,11 @@ Total queued articles: <b>${count}</b>`
           await this.jobLock("manual-test");
           await telegram.sendMessage(chatId, "🔒 Ran the lock job. /plan tomorrow");
         } else if (target === "morning") await this.sendMorning(telegram, chatId, "manual");
-        else await telegram.sendMessage(chatId, "⚠️ <b>Usage:</b> <code>/testcue evening|lock|morning</code>");
+        else if (target === "nudge") {
+          const gate = nudgeGate(doDb(this.ctx), Date.now());
+          if (!gate.ok) await telegram.sendMessage(chatId, `📣 No nudge right now: ${escapeHtml(gate.reason)}.`);
+          else await this.jobNudge("manual-test");
+        } else await telegram.sendMessage(chatId, "⚠️ <b>Usage:</b> <code>/testcue evening|lock|morning|nudge</code>");
         break;
       }
 
@@ -1169,8 +1235,43 @@ Total queued articles: <b>${count}</b>`
     return { toast: "That button has expired." };
   }
 
-  /** Buttons that are not reminders (nudges, the pause question). */
-  private async otherButton(_area: string, _action: string, _id: string): Promise<{ toast: string; text?: string }> {
+  /** Buttons that are not reminders: the check-in nudge (n:done|skip|later:<item>) and the pause question (p:resume|week). */
+  private async otherButton(area: string, action: string, id: string): Promise<{ toast: string; text?: string }> {
+    const db = doDb(this.ctx);
+    const nowMs = Date.now();
+    if (area === "n") {
+      const itemId = Number(id);
+      const item = loadItems(db, dayKey(nowMs)).find((i) => i.id === itemId);
+      if (!item) return { toast: "That was for another day." };
+      recordNudgeAnswer(db, nowMs, action, itemId);
+      if (action === "later") return { toast: "OK", text: `${escapeHtml(item.title)}\n<i>Later. It'll be in the evening recap.</i>` };
+      if (item.status !== "planned") return { toast: `Already ${item.status}.`, text: `${escapeHtml(item.title)}\n<i>${item.status}</i>` };
+      const status = action === "done" ? "done" : "skipped";
+      this.applyPlanOp({ type: "set_item_status", item_id: itemId, status }, { source: "telegram" });
+      this.replanAfterChange(dayKey(nowMs));
+      return { toast: status === "done" ? "Done ✅" : "Skipped", text: `${status === "done" ? "✅" : "⏭"} ${escapeHtml(item.title)}\n<i>/undo to reverse</i>` };
+    }
+    if (area === "p") {
+      if (action === "resume") {
+        this.clearSnooze();
+        return { toast: "Back on", text: "👋 OK, I'll keep going. Talk soon." };
+      }
+      if (action === "week") {
+        this.setSnooze(7 * 24, "paused a week");
+        return { toast: "Paused", text: "😴 Paused for a week. Your plan still locks itself and reminders still fire. /unsnooze any time." };
+      }
+    }
     return { toast: "That button has expired." };
+  }
+
+  /** The quiet after "pause or keep going?" lasts only until you write again. */
+  private endSilentQuiet(): void {
+    const db = doDb(this.ctx);
+    try {
+      const m = JSON.parse(getConfig(db, "mute", "{}")) as { until?: number; reason?: string };
+      if (m.reason === "silent" && m.until && m.until > Date.now()) {
+        db.run("UPDATE config SET value = ? WHERE key = 'mute'", JSON.stringify({ until: 0 }));
+      }
+    } catch {}
   }
 }

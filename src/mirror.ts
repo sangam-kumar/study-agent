@@ -10,7 +10,8 @@ import type { Db } from "./db/db.ts";
 import { loadDayRow, loadItems } from "./day.ts";
 import { sessionMarkdown } from "./fitness.ts";
 import type { GitHubClient, CommitResult } from "./github/client.ts";
-import { dateLabel } from "./time.ts";
+import { dateLabel, weekdayIndex } from "./time.ts";
+import { weeklyMarkdown } from "./weekly.ts";
 
 export const BLOCK_START = "<!-- study-agent:start (written by the study agent; edit outside this block) -->";
 export const BLOCK_END = "<!-- study-agent:end -->";
@@ -59,7 +60,7 @@ export function renderDailyBlock(db: Db, date: string): string | null {
 
   return [
     BLOCK_START, `## Plan — ${dateLabel(date)}`, `_${meta.join(" · ")}_`, "", ...(lines.length ? lines : ["- Nothing planned."]),
-    ...sessionMarkdown(db, date), BLOCK_END,
+    ...sessionMarkdown(db, date), ...(weekdayIndex(date) === 6 ? weeklyMarkdown(db, date) : []), BLOCK_END,
   ].join("\n");
 }
 

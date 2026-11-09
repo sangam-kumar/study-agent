@@ -53,3 +53,17 @@ npm run dev
 ```
 
 > **Note:** External integrations (Telegram, GitHub API, Google AI Studio fallback) require secrets configured via `wrangler secret put` or a local `.dev.vars` file.
+
+## Reading your data
+
+Read-only views over everything the agent has logged, behind `ADMIN_TOKEN` (details in `docs/phase-15-data-access.md`):
+
+```bash
+# list the views, or read one (JSON by default, &format=csv for a spreadsheet)
+curl -H "Authorization: Bearer $ADMIN_TOKEN" https://<worker>/admin/view
+curl -H "Authorization: Bearer $ADMIN_TOKEN" "https://<worker>/admin/view/sessions?from=2026-11-01&to=2026-11-09"
+
+# or dump to files (exports/ is gitignored)
+npm run export -- --url https://<worker> --all --from 2026-11-01
+npm run export -- --url https://<worker> --view messages --from 2026-11-05
+```

@@ -10,3 +10,5 @@ yarn-error.log*
 
 # Cloudflare Submission Docs
 prompt-history.md
+# Personal data pulled by npm run export
+exports/

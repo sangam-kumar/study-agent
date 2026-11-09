@@ -13,7 +13,7 @@ import { addDays, calendarDate, dateLabel, dayKey } from "./time.ts";
 const clip = (s: string, n = 90) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
 /** Intent -> the event lane whose recent history is worth showing. */
-const EVENT_LANE: Partial<Record<Intent, string>> = { reading: "reading", jot: "reading", progress: "reading", study_done: "study", workout: "fitness" };
+const EVENT_LANE: Partial<Record<Intent, string>> = { reading: "reading", jot: "reading", progress: "reading", study_done: "study", workout: "fitness", workout_edit: "fitness" };
 
 export function buildSnapshot(db: Db, intent: Intent, nowMs: number): string {
   const lines: string[] = [`Now: ${istNowLabel(nowMs)}.`];
@@ -63,7 +63,7 @@ export function buildSnapshot(db: Db, intent: Intent, nowMs: number): string {
     if (shortlist.length > 0) lines.push(`Shortlist: ${shortlist.map((s) => clip(s.title, 45)).join("; ")}.`);
   }
 
-  if (intent === "workout") {
+  if (intent === "workout" || intent === "workout_edit") {
     lines.push(`Calendar: today ${dateLabel(today)} = ${today}; yesterday ${dateLabel(addDays(today, -1))} = ${addDays(today, -1)}.`);
     const logged = sessionNotation(db, today);
     if (logged) lines.push(`Logged today: ${clip(logged, 600)}`);

@@ -7,7 +7,7 @@
 // Derived, never stored: weekly lifts and mobility, protein average, best sets.
 
 import type { Db } from "./db/db.ts";
-import { ensureCatalog, findExercise, loadCatalog, matchExercise } from "./exercises.ts";
+import { ensureCatalog, findExercise, loadCatalog, matchExercise, normalizeName, suggestExercise } from "./exercises.ts";
 import type { ExerciseRow } from "./exercises.ts";
 import { formatSet, parseExerciseLines } from "./sets.ts";
 import type { ExerciseKind, SetEntry } from "./sets.ts";
@@ -300,6 +300,225 @@ export function findRepeat(db: Db, op: LogWorkoutOp, nowMs: number): string | nu
   const p = JSON.parse(prev.op_json) as LogWorkoutOp;
   const shape = (o: LogWorkoutOp) => JSON.stringify([o.date, o.mode, o.exercises.map((e) => [e.name.toLowerCase(), e.sets])]);
   return shape(p) === shape(op) ? prev.ts : null;
+}
+
+// --------------------------------------------------- restating a log (Phase 16)
+
+type SetLike = { weight_kg: number | null; reps: number | null; duration_s: number | null; bw: boolean | number; kind: string };
+const setKey = (s: SetLike) => `${s.weight_kg ?? ""}|${s.reps ?? ""}|${s.duration_s ?? ""}|${s.bw ? 1 : 0}|${s.kind}`;
+
+export interface Reconciled {
+  /** What to apply; null when every exercise was already logged exactly as sent. */
+  op: LogWorkoutOp | null;
+  /** Exercises left out because their sets are in the session already. */
+  unchanged: string[];
+  /** Exercises where the earlier sets were repeated and new ones added: only the new ones are applied. */
+  extended: { name: string; added: number }[];
+  /** Exercises where the earlier sets were repeated with a change: their sets are replaced. */
+  restated: string[];
+}
+
+/**
+ * Compares a message with what the day's session already holds, per exercise, so sending a log again
+ * (or the whole log with one set changed) changes only what differs instead of adding everything twice.
+ *   same sets                       -> left out
+ *   earlier sets, then more         -> only the extra sets
+ *   mostly the earlier sets, edited -> replaces that exercise's sets
+ *   anything else                   -> appended, as before
+ * A model-set "replace" is respected as given.
+ */
+export function reconcileWorkout(db: Db, op: LogWorkoutOp): Reconciled {
+  const session = loadSession(db, op.date);
+  const out: LogWorkoutOp["exercises"] = [];
+  const unchanged: string[] = [];
+  const extended: { name: string; added: number }[] = [];
+  const restated: string[] = [];
+  let firstUnchanged: LogWorkoutOp["exercises"][number] | undefined;
+
+  for (const ex of op.exercises) {
+    const entry = findExercise(db, ex.name);
+    const have = session && entry ? session.exercises.find((e) => e.exerciseId === entry.id) : undefined;
+    if (!have || have.sets.length === 0 || (ex.mode ?? op.mode) === "replace") {
+      out.push(ex);
+      continue;
+    }
+    const before = have.sets.map(setKey);
+    const after = ex.sets.map(setKey);
+    const n = before.length;
+    const m = after.length;
+    if (m === n && after.every((k, i) => k === before[i])) {
+      unchanged.push(have.name);
+      firstUnchanged ??= ex;
+      continue;
+    }
+    if (m > n && before.every((k, i) => k === after[i])) {
+      out.push({ ...ex, sets: ex.sets.slice(n), mode: "append" });
+      extended.push({ name: have.name, added: m - n });
+      continue;
+    }
+    if (m >= n) {
+      const pool = [...before];
+      let overlap = 0;
+      for (const k of after) {
+        const i = pool.indexOf(k);
+        if (i >= 0) {
+          pool.splice(i, 1);
+          overlap++;
+        }
+      }
+      if (overlap >= Math.ceil(n / 2)) {
+        out.push({ ...ex, mode: "replace" });
+        restated.push(have.name);
+        continue;
+      }
+    }
+    out.push(ex);
+  }
+
+  // Nothing new to add, but the message carried a note or a pain: rewrite one exercise with its own sets so they are kept.
+  if (out.length === 0 && firstUnchanged && (op.notes || op.pain)) out.push({ ...firstUnchanged, mode: "replace" });
+  return { op: out.length > 0 ? { ...op, exercises: out } : null, unchanged, extended, restated };
+}
+
+/**
+ * The exercise in a day's session that a name refers to: by catalog entry, by the name as logged, or by a near-miss
+ * ("face full" for "Face Pull"). null when the day has no such exercise.
+ */
+export function findSessionExercise(db: Db, date: string, name: string): SessionExercise | null {
+  const session = loadSession(db, date);
+  if (!session) return null;
+  const entry = findExercise(db, name);
+  if (entry) {
+    const hit = session.exercises.find((e) => e.exerciseId === entry.id);
+    if (hit) return hit;
+  }
+  const want = normalizeName(name);
+  const exact = session.exercises.find((e) => normalizeName(e.name) === want);
+  if (exact) return exact;
+  const ids = new Set(session.exercises.map((e) => e.exerciseId));
+  const near = suggestExercise(loadCatalog(db).filter((r) => ids.has(r.id)), name);
+  return near ? (session.exercises.find((e) => e.exerciseId === near.id) ?? null) : null;
+}
+
+/** "10" / "10 reps" -> reps; "22.5 kg" -> weight; "22.5x10" -> both. A trailing "not 12" is ignored. */
+function amendValue(text: string): { weight_kg?: number; reps?: number } | null {
+  const v = text.replace(/\s+(?:not|instead of|and not)\s+.*$/i, "").trim();
+  let m = /^(\d+(?:\.\d+)?)\s*(?:kgs?\s*)?[x×]\s*(\d+)$/i.exec(v);
+  if (m) return { weight_kg: Number(m[1]), reps: Number(m[2]) };
+  m = /^(\d+)\s*reps?$/i.exec(v) ?? /^(\d+)$/.exec(v);
+  if (m) return { reps: Number(m[1]) };
+  m = /^(\d+(?:\.\d+)?)\s*kgs?$/i.exec(v);
+  if (m) return { weight_kg: Number(m[1]) };
+  return null;
+}
+
+/**
+ * Edits typed in plain words, read by code with no model. Each one only applies when the exercise it names is in
+ * the day's session, so ordinary sentences are never mistaken for edits.
+ *   "face full should be face pull" · "it was face pull, not face full" · "no, face pull" (the one exercise just logged)
+ *   "set 2 of bench was 10 reps" · "bench set 2 was 22.5x10" · "remove calves"
+ */
+export function parseExerciseEdit(db: Db, text: string, date: string, lastExercises: string[] = []): Op | null {
+  const t = text.trim().replace(/[.!]+$/, "");
+  if (!t || t.length > 120) return null;
+  const inSession = (name: string) => findSessionExercise(db, date, name) !== null;
+  /** Looks like an exercise name: letters only, a few words. Keeps "bench should be 22.5x10" from being a rename. */
+  const nameLike = (n: string) => /^[a-z][a-z' -]*$/i.test(n.trim()) && n.trim().split(/\s+/).length <= 5;
+
+  let m = /^(.+?)\s+(?:should (?:be|have been)|was meant to be|is actually|was actually|is really)\s+(.+)$/i.exec(t);
+  if (m && nameLike(m[2]) && inSession(m[1])) return { type: "rename_exercise", date, from: m[1].trim(), to: m[2].trim() };
+
+  m = /^(?:no[, ]+)?(?:it was|it's|its|i meant|i said|that was|it should be)\s+(.+?),?\s+(?:not|instead of|and not)\s+(.+)$/i.exec(t);
+  if (m && nameLike(m[1]) && nameLike(m[2]) && inSession(m[2])) return { type: "rename_exercise", date, from: m[2].trim(), to: m[1].trim() };
+
+  m = /^(?:no[, ]+|it was |i meant |i said |actually[, ]+|it should be )(.+)$/i.exec(t);
+  if (m && lastExercises.length === 1 && nameLike(m[1])) {
+    const rows = loadCatalog(db);
+    const hit = matchExercise(rows, m[1]) ?? suggestExercise(rows, m[1]);
+    if (hit && hit.canonical_name !== lastExercises[0] && inSession(lastExercises[0])) {
+      return { type: "rename_exercise", date, from: lastExercises[0], to: hit.canonical_name };
+    }
+  }
+
+  const amend =
+    /^(?:set|s)\s*(\d+)\s+(?:of|for|on)\s+(.+?)\s+(?:was|is|should be|were)\s+(.+)$/i.exec(t) ??
+    /^(\d+)(?:st|nd|rd|th)\s+set\s+(?:of|for|on)\s+(.+?)\s+(?:was|is|should be)\s+(.+)$/i.exec(t);
+  const amendAlt = amend ? null : /^(.+?)\s+set\s+(\d+)\s+(?:was|is|should be)\s+(.+)$/i.exec(t);
+  const parts = amend ? { setNo: amend[1], name: amend[2], value: amend[3] } : amendAlt ? { setNo: amendAlt[2], name: amendAlt[1], value: amendAlt[3] } : null;
+  if (parts) {
+    const v = amendValue(parts.value);
+    if (v && inSession(parts.name)) return { type: "amend_set", date, exercise: parts.name.trim(), set_no: Number(parts.setNo), ...v };
+  }
+
+  m = /^(?:remove|delete|scratch|take out)\s+(.+?)(?:\s+from\s+(?:today|today's workout|the workout|my workout|the log))?$/i.exec(t);
+  if (m && nameLike(m[1]) && inSession(m[1])) return { type: "remove_exercise", date, exercise: m[1].trim() };
+
+  return null;
+}
+
+/** Names in a log that match nothing in the catalog but look like a misspelling of an entry: "face full" -> Face Pull. */
+export function unsureNames(db: Db, op: LogWorkoutOp): { typed: string; suggestion: string }[] {
+  const rows = loadCatalog(db);
+  const out: { typed: string; suggestion: string }[] = [];
+  for (const ex of op.exercises) {
+    if (matchExercise(rows, ex.name)) continue;
+    const near = suggestExercise(rows, ex.name);
+    if (near && !out.some((o) => o.typed.toLowerCase() === ex.name.toLowerCase())) out.push({ typed: ex.name, suggestion: near.canonical_name });
+  }
+  return out;
+}
+
+/**
+ * The log with the named exercises swapped for the ones the user confirmed. `learn` carries the spelling that was
+ * typed, so it is saved as an alias in the same step. Names not in the mapping are left as they were.
+ */
+export function renameInOp(op: LogWorkoutOp, mapping: Record<string, string>): LogWorkoutOp {
+  const by = new Map(Object.entries(mapping).map(([typed, to]) => [typed.toLowerCase(), to]));
+  return {
+    ...op,
+    exercises: op.exercises.map((ex) => {
+      const to = by.get(ex.name.toLowerCase());
+      return to ? { ...ex, name: to, learn: ex.name } : ex;
+    }),
+  };
+}
+
+/** What changed between two views of a day's session, one line each. changed is false when sets were only added. */
+export function diffSessions(before: Session | null, after: Session | null): { lines: string[]; changed: boolean } {
+  const lines: string[] = [];
+  let changed = false;
+  const text = (s: SetRow) => formatSet(asEntry(s));
+  const keyOf = (e: SessionExercise) => (e.exerciseId !== null ? `id:${e.exerciseId}` : `name:${e.name.toLowerCase()}`);
+  const was = new Map((before?.exercises ?? []).map((e) => [keyOf(e), e]));
+  const now = new Map((after?.exercises ?? []).map((e) => [keyOf(e), e]));
+
+  for (const [key, e] of now) {
+    const old = was.get(key);
+    if (!old) {
+      lines.push(`+ ${esc(e.name)}: ${esc(setsText(e.sets))}`);
+      continue;
+    }
+    for (let i = 0; i < Math.max(old.sets.length, e.sets.length); i++) {
+      const a = old.sets[i];
+      const b = e.sets[i];
+      if (a && b && text(a) !== text(b)) {
+        lines.push(`${esc(e.name)}: set ${i + 1} ${esc(text(a))} → ${esc(text(b))}`);
+        changed = true;
+      } else if (!a && b) {
+        lines.push(`${esc(e.name)}: + set ${i + 1} ${esc(text(b))}`);
+      } else if (a && !b) {
+        lines.push(`${esc(e.name)}: − set ${i + 1} (${esc(text(a))})`);
+        changed = true;
+      }
+    }
+  }
+  for (const [key, e] of was) {
+    if (!now.has(key)) {
+      lines.push(`− ${esc(e.name)} removed`);
+      changed = true;
+    }
+  }
+  return { lines, changed };
 }
 
 /** Sessions still open on or before a date are closed (23:00 job). A later chunk reopens the same day. */

@@ -231,7 +231,11 @@ test("plan: nothing matching, or several, becomes a question", async () => {
   assert.ok(none.kind === "reply" && /couldn't find "guitar"/.test(none.html));
   applyOp(db, { type: "add_item", date: TODAY, lane: "study", title: "DSA: Valid Anagram" }, { now });
   const many = await run(db, model("plan", 0.9, { action: "done", ref: "dsa" }), "done dsa");
-  assert.ok(many.kind === "reply" && /Which one/.test(many.html) && /Valid Anagram/.test(many.html));
+  assert.ok(many.kind === "choose" && /Which one/.test(many.html) && /Valid Anagram/.test(many.html));
+  if (many.kind === "choose") {
+    assert.equal(many.pending.action, "done");
+    assert.deepEqual(many.pending.options.map((o) => o.title), ["DSA: Two Sum", "DSA: Valid Anagram"]);
+  }
 });
 
 test("override: dates are validated and the affected range is reported", async () => {
@@ -245,4 +249,42 @@ test("override: dates are validated and the affected range is reported", async (
   assert.equal((await run(world(), backwards, "sick")).kind, "inbox");
   const farAway = model("override", 0.95, { override_type: "OUT", start_date: "2027-06-01", end_date: "2027-06-01" });
   assert.equal((await run(world(), farAway, "out next june")).kind, "inbox");
+});
+
+// ---------------------------------------------------------------- workout_edit (Phase 16)
+
+test("workout_edit: rename, amend and remove become the matching ops", async () => {
+  const db = world();
+  const rename = await run(db, model("workout_edit", 0.9, { action: "rename_exercise", exercise: "face full", to_name: "Face Pull" }), "that wasn't face full, it was face pull");
+  assert.deepEqual(rename, { kind: "ops", ops: [{ type: "rename_exercise", date: "2026-10-30", from: "face full", to: "Face Pull" }] });
+
+  const amend = await run(db, model("workout_edit", 0.9, { action: "amend_set", exercise: "bench", set_no: 2, field: "reps", value: 10 }), "second set of bench was 10 reps");
+  assert.deepEqual(amend, { kind: "ops", ops: [{ type: "amend_set", date: "2026-10-30", exercise: "bench", set_no: 2, reps: 10 }] });
+
+  const weight = await run(db, model("workout_edit", 0.9, { action: "amend_set", exercise: "row", set_no: 1, field: "weight_kg", value: 32.5, date: "2026-10-29" }), "yesterday row set 1 was 32.5");
+  assert.deepEqual(weight, { kind: "ops", ops: [{ type: "amend_set", date: "2026-10-29", exercise: "row", set_no: 1, weight_kg: 32.5 }] });
+
+  const remove = await run(db, model("workout_edit", 0.9, { action: "remove_exercise", exercise: "calves" }), "take out calves");
+  assert.deepEqual(remove, { kind: "ops", ops: [{ type: "remove_exercise", date: "2026-10-30", exercise: "calves" }] });
+});
+
+test("workout_edit: an answer missing what the action needs is retried, then goes to the inbox", async () => {
+  const db = world();
+  const b = model("workout_edit", 0.9, { action: "amend_set", exercise: "bench", set_no: 2 });
+  const out = await run(db, b, "bench set 2 was different");
+  assert.equal(out.kind, "inbox");
+  assert.equal(b.extractCalls, 2, "one retry");
+  const rename = await run(db, model("workout_edit", 0.9, { action: "rename_exercise", exercise: "x" }), "rename x");
+  assert.equal(rename.kind, "inbox", "rename needs to_name");
+  const future = await run(db, model("workout_edit", 0.9, { action: "remove_exercise", exercise: "x", date: "2026-11-30" }), "remove x tomorrow");
+  assert.equal(future.kind, "inbox", "not a future day");
+});
+
+test("workout_edit sees what is logged today and today's calendar", () => {
+  const db = world();
+  applyOp(db, { type: "log_workout", date: "2026-10-30", mode: "append", exercises: [{ name: "Face Pull", sets: [{ weight_kg: 15, reps: 12, duration_s: null, rest_s: null, kind: "working", bw: false, notes: null, incomplete: false }] }] }, { now });
+  const p = contextPacket(db, "workout_edit", nowMs, "face full should be face pull");
+  assert.match(p.user, /Logged today: Face Pull: 15x12/);
+  assert.match(p.user, /today Fri 30 Oct = 2026-10-30/);
+  assert.match(p.system, /rename_exercise: exercise = the exercise as currently logged/);
 });

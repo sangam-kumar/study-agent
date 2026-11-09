@@ -2,6 +2,7 @@ import { routeAgentRequest, getAgentByName } from "agents";
 
 import { StudyAgent } from "./agent";
 import { isAdminAuthorized } from "./admin";
+import { listViews, toCsv } from "./views";
 
 // Export classes bound in wrangler.jsonc
 export { StudyAgent };
@@ -110,6 +111,44 @@ export default {
       const agent = await getAgentByName<Env, StudyAgent>(env.STUDY_AGENT, "singleton");
       const result = await agent.resetData(url.searchParams.get("scope") ?? "", url.searchParams.get("confirm") === "yes");
       return Response.json(result, { status: result.ok ? 200 : 400 });
+    }
+
+    // Admin: read-only views of the logged data.  GET /admin/view  ·  GET /admin/view/<name>?from=&to=&limit=&format=csv
+    if (url.pathname === "/admin/view" || url.pathname.startsWith("/admin/view/")) {
+      if (request.method !== "GET") {
+        return new Response("Method Not Allowed", { status: 405 });
+      }
+      const denied = await adminGuard(request, env);
+      if (denied) return denied;
+
+      if (url.pathname === "/admin/view") {
+        return Response.json({ ok: true, views: listViews() });
+      }
+
+      let name: string;
+      try {
+        name = decodeURIComponent(url.pathname.slice("/admin/view/".length));
+      } catch {
+        return Response.json({ ok: false, error: "bad view name" }, { status: 400 });
+      }
+      const params: Record<string, string> = {};
+      url.searchParams.forEach((value, key) => {
+        if (key !== "format") params[key] = value;
+      });
+      const format = url.searchParams.get("format") ?? "json";
+      if (format !== "json" && format !== "csv") {
+        return Response.json({ ok: false, error: "format must be json or csv" }, { status: 400 });
+      }
+
+      const agent = await getAgentByName<Env, StudyAgent>(env.STUDY_AGENT, "singleton");
+      const out = await agent.readView(name, params);
+      if (!out.ok) return Response.json(out, { status: 400 });
+      if (format === "csv") {
+        return new Response(toCsv(out.result.columns, out.result.rows), {
+          headers: { "Content-Type": "text/csv; charset=utf-8", "Cache-Control": "no-store" },
+        });
+      }
+      return Response.json({ ok: true, ...out.result }, { headers: { "Cache-Control": "no-store" } });
     }
 
     return new Response("Not Found", { status: 404 });

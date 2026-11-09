@@ -49,6 +49,13 @@ const ddia = db.all<{ id: number }>("SELECT id FROM reading_item WHERE title = '
 applyOp(db, { type: "start_reading", reading_id: ddia }, { now });
 ensureDraft(db, TODAY, nowMs);
 ensureDraft(db, TOMORROW, nowMs);
+// Today's session, so the workout_edit phrases have something to point at.
+const set = (weight_kg: number, reps: number) => ({ weight_kg, reps, duration_s: null, rest_s: null, kind: "working" as const, bw: false, notes: null, incomplete: false });
+applyOp(db, { type: "log_workout", date: TODAY, mode: "append", exercises: [
+  { name: "Face Fll", sets: [set(15, 12), set(15, 12)] },
+  { name: "Flat Bench Press", sets: [set(20, 12), set(20, 12), set(20, 12)] },
+  { name: "Calf Raise", sets: [set(0, 20)] },
+] } as never, { now });
 const bankReminder = insertReminder(db, { text: "call the bank about the card", dueMs: istWallToMs(TOMORROW, "16:00") }, nowMs);
 const item = (date: string, pred: (t: string) => boolean) => loadItems(db, date).find((i) => pred(i.title))?.id;
 const bookId = (like: string) => db.all<{ id: number }>("SELECT id FROM reading_item WHERE title LIKE ?", like)[0]?.id;
@@ -119,6 +126,10 @@ const cases: Case[] = [
     group: "workout", text: "done with shoulders, lateral raise 5x15 three times, and had about 110g protein", expect: "3 sets + protein 110",
     check: (o) => o.kind === "workout" && o.protein === 110 && o.op.exercises[0].sets.length === 3,
   },
+  { group: "workout_edit", text: "face fll should be face pull", expect: "rename_exercise Face Fll -> Face Pull", check: isOp("rename_exercise", { from: has("face"), to: has("face pull") }) },
+  { group: "workout_edit", text: "oops the bench set 2 was 10 reps not 12", expect: "amend_set bench set 2 reps 10", check: isOp("amend_set", { set_no: 2, reps: 10 }) },
+  { group: "workout_edit", text: "I didn't actually do calf raises, remove them", expect: "remove_exercise calf", check: isOp("remove_exercise", { exercise: has("calf") }) },
+  { group: "workout_edit", text: "the last bench set was only 8 reps", expect: "amend_set bench set 3 reps 8", check: isOp("amend_set", { set_no: 3, reps: 8 }) },
   { group: "snooze", text: "pause your messages for 3 hours, I'm in a meeting", expect: "snooze 3h", check: (o) => o.kind === "snooze" && o.hours === 3 },
   { group: "chat", text: "hey how's it going", expect: "a reply, nothing changed", check: (o) => o.kind === "reply" },
   { group: "vague", text: "the thing from earlier", expect: "inbox or a question", check: (o) => o.kind === "inbox" || o.kind === "reply", workers: true },
@@ -137,7 +148,9 @@ function throttled(b: InferBackend, gapMs: number): InferBackend & { calls: numb
       if (wait > 0) await new Promise((r) => setTimeout(r, wait));
       last = Date.now();
       t.calls++;
-      return b.json(req);
+      const r = await b.json(req);
+      if (process.env.DBG) console.log("RAW", JSON.stringify(r).slice(0, 400));
+      return r;
     },
   };
   return t;
@@ -176,7 +189,7 @@ for (const c of selected) {
   const started = Date.now();
   let out: Outcome;
   try {
-    out = await understand({ db, backends: [backend], nowMs, log: (l) => warnings.push(l) }, c.text);
+    out = await understand({ db, backends: [backend], nowMs, log: (l) => { warnings.push(l); if (process.env.DBG) console.log("LOG", l.slice(0, 600)); } }, c.text);
   } catch (e) {
     out = { kind: "reply", html: `CRASH: ${(e as Error).message}` };
   }

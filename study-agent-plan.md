@@ -244,8 +244,46 @@ flowchart TD
   - [x] 14.4: `jot` + `progress` intents; `study/notes/<slug>.md` projection; `/jots`.
 * **Check:** see reform-plan §6 acceptance table.
 
+> Phases 15 onward come from `docs/backlog.md` (bugs, fixes and ideas gathered from real use, 2026-11-09). Each phase gets its doc when it starts; the backlog IDs in brackets say what it covers.
+
+### Phase 15: Data access — read-only views [D1]
+* **Phase Doc:** `docs/phase-15-data-access.md`
+* **Sub-steps:**
+  - [x] 15.1 `src/views.ts`: 13 named read-only views, validated parameters, `toCsv`.
+  - [x] 15.2 `tests/views.test.ts`.
+  - [x] 15.3 `StudyAgent.readView` and `GET /admin/view[/<name>]` behind the admin guard.
+  - [x] 15.4 `scripts/export-data.ts` (`npm run export`); `exports/` gitignored.
+  - [x] 15.5 Docs.
+* **Check:** after deploy, `npm run export -- --url <worker> --view messages --from <day of the duplicate sets>` shows the raw messages for B3.
+
+### Phase 16: Conversation state and natural-language edits [N1, N2, N3, N5, B1, B2, B3, B6]
+* **Phase Doc:** `docs/phase-16-conversation-edits.md`
+* **Sub-steps:**
+  - [x] 16.1 Conversation state (`src/convo.ts`): one pending question + last action; "Which one?" answered by "both" / "2" / "neither"; "add again" on the same slot.
+  - [x] 16.2 Restating a log: `reconcileWorkout` (same sets skipped, extra sets added, edited sets replaced), per-exercise mode, "Changed" diff in the reply.
+  - [x] 16.3 Near-matches for exercise names: ask before creating ("face full" -> Face Pull?), learn the spelling as an alias.
+  - [x] 16.4 Edits after the fact: `rename_exercise`, `amend_set`, `remove_exercise`; plain-word patterns; `workout_edit` intent for the model.
+  - [x] 16.5 `/help`, docs.
+* **Check:** after deploy, the five scenarios in the phase doc §10; then `npm run live-check` for the `workout_edit` phrasings (not yet run).
+
+### Phase 17: Feedback intent and protein as additions [B4, B5, P-1, P-2]
+* **Phase Doc:** to be written at the start of the phase.
+- [ ] 17.x sub-steps defined in the phase doc.
+
+### Phase 18: Fitness coverage model [F1–F5]
+* **Phase Doc:** to be written at the start of the phase.
+- [ ] 18.x sub-steps defined in the phase doc.
+
+### Phase 19: Questions from data, reminder hygiene, contextual tips [Q1–Q4, N4, N6]
+* **Phase Doc:** to be written at the start of the phase.
+- [ ] 19.x sub-steps defined in the phase doc.
+
+### Phases 20+: Dashboard [D-1 … D-6]
+* Shell with signed-link auth, Today and Week → Fitness, Protein, Sleep → Study, Reading → Agent log → sharing → actions. Built on the Phase 15 views. See `docs/backlog.md`.
+
 ### Order of execution
 P7 → P8 → P9 → P10 (**start living on it here**) → P12 → P11 → P13 → P14, then 14 days untouched. P12 is pulled forward because it closes the commit gap as a side effect.
+Then P15 → P16 → P17 → P18 → P19 → dashboard. P15 comes first because it shows the data P16 needs to fix.
 
 ### Definition of done (every phase)
 Typecheck and tests green, docs updated, and **`/help` lists every new command or behaviour** the phase adds.

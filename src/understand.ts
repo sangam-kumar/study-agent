@@ -20,6 +20,7 @@ import { addDays, dayKey, istWallToMs } from "./time.ts";
 import { findExercise } from "./exercises.ts";
 import { parseSets } from "./sets.ts";
 import type { LogWorkoutOp } from "./fitness.ts";
+import type { Pending } from "./convo.ts";
 
 export const MIN_CONFIDENCE = 0.6;
 
@@ -35,6 +36,8 @@ export type Outcome =
   | { kind: "workout"; op: LogWorkoutOp; protein?: number }
   | { kind: "snooze"; hours: number; reason: string }
   | { kind: "reply"; html: string }
+  /** A question whose answer is a short reply; the agent stores the pending question (convo.ts). */
+  | { kind: "choose"; html: string; pending: Extract<Pending, { kind: "choose_item" }> }
   | { kind: "inbox"; reason: string };
 
 export interface UnderstandDeps {
@@ -180,6 +183,18 @@ const EXTRACT_SCHEMAS: Record<Intent, JsonSchema> = {
     },
     ["exercises"],
   ),
+  workout_edit: S(
+    {
+      action: { type: "string", enum: ["rename_exercise", "amend_set", "remove_exercise"] },
+      exercise: { type: "string", description: "the exercise as currently logged" },
+      to_name: { type: "string", description: "rename_exercise: the correct name" },
+      set_no: { type: "number", description: "amend_set: 1 = first set" },
+      field: { type: "string", enum: ["reps", "weight_kg", "duration_s"], description: "amend_set: which value changes (ignored for other actions)" },
+      value: { type: "number", description: "amend_set: the new value of that field" },
+      date: { type: "string", description: "YYYY-MM-DD only if a past day was named, else empty" },
+    },
+    ["action", "exercise", "field", "value"],
+  ),
   snooze: S({ duration_hours: { type: "number" }, reason: { type: "string" } }, ["reason"]),
   chat: S({ reply: { type: "string" } }, ["reply"]),
 };
@@ -208,7 +223,14 @@ const LANE_HANDLERS: Record<Intent, (db: Db, nowMs: number) => { validate: (raw:
       const where = v.action === "move" ? [today, addDays(today, 1)] : v.date ? [v.date] : [today, addDays(today, 1)];
       const statuses = v.action === "done" ? ["planned", "skipped"] : ["planned"];
       const found = resolvePlanItem(db, v.ref!, where, statuses);
-      if ("reply" in found) return { kind: "reply", html: found.reply };
+      if ("reply" in found) {
+        // Several matched: ask, and remember the options so "both" / "2" can answer it.
+        if (found.options) {
+          const action = v.action as "done" | "skip" | "move";
+          return { kind: "choose", html: found.reply, pending: { kind: "choose_item", action, toDate: action === "move" ? v.date : undefined, options: found.options } };
+        }
+        return { kind: "reply", html: found.reply };
+      }
       if (v.action === "move") return { kind: "ops", ops: [{ type: "move_item", item_id: found.item.id, to_date: v.date }] };
       return { kind: "ops", ops: [{ type: "set_item_status", item_id: found.item.id, status: v.action === "done" ? "done" : "skipped" }] };
     },
@@ -368,6 +390,33 @@ const LANE_HANDLERS: Record<Intent, (db: Db, nowMs: number) => { validate: (raw:
       op: { type: "log_workout", date: v.date, mode: v.replace ? "replace" : "append", exercises: v.exercises, pain: v.pain, notes: v.notes },
       protein: v.protein,
     }),
+  }),
+
+  workout_edit: (_db, nowMs) => ({
+    validate: (raw) => {
+      const o = asObj(raw);
+      const action = oneOf(o, "action", ["rename_exercise", "amend_set", "remove_exercise"] as const);
+      const exercise = str(o, "exercise", 100);
+      const today = dayKey(nowMs);
+      const date = optStr(o, "date", 10) ?? today;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date > today || date < addDays(today, -7)) throw new ValidationError("date must be today or one of the last 7 days");
+      if (action === "rename_exercise") return { action, date, exercise, to: str(o, "to_name", 100) };
+      if (action === "remove_exercise") return { action, date, exercise };
+      const field = oneOf(o, "field", ["reps", "weight_kg", "duration_s"] as const);
+      const value = num(o, "value", 0, field === "weight_kg" ? 500 : field === "reps" ? 1000 : 7200);
+      return { action, date, exercise, set_no: Math.round(num(o, "set_no", 1, 40)), field, value };
+    },
+    map: (v: { action: string; date: string; exercise: string; to?: string; set_no?: number; field?: "reps" | "weight_kg" | "duration_s"; value?: number }): Outcome => {
+      if (v.action === "rename_exercise") return { kind: "ops", ops: [{ type: "rename_exercise", date: v.date, from: v.exercise, to: v.to }] };
+      if (v.action === "remove_exercise") return { kind: "ops", ops: [{ type: "remove_exercise", date: v.date, exercise: v.exercise }] };
+      return {
+        kind: "ops",
+        ops: [{
+          type: "amend_set", date: v.date, exercise: v.exercise, set_no: v.set_no,
+          [v.field!]: v.field === "weight_kg" ? v.value : Math.round(v.value!),
+        }],
+      };
+    },
   }),
 
   snooze: () => ({

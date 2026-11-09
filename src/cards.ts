@@ -8,8 +8,8 @@ You only translate the user's message into the requested JSON. You never decide 
 If the message is unclear, lower your confidence instead of guessing.
 Be brief.`;
 
-export type Intent = "plan" | "override" | "reading" | "jot" | "progress" | "study_done" | "reminder" | "note" | "workout" | "snooze" | "chat";
-export const INTENTS: readonly Intent[] = ["plan", "override", "reading", "jot", "progress", "study_done", "reminder", "note", "workout", "snooze", "chat"];
+export type Intent = "plan" | "override" | "reading" | "jot" | "progress" | "study_done" | "reminder" | "note" | "workout" | "workout_edit" | "snooze" | "chat";
+export const INTENTS: readonly Intent[] = ["plan", "override", "reading", "jot", "progress", "study_done", "reminder", "note", "workout", "workout_edit", "snooze", "chat"];
 
 export const CLASSIFY_CARD = `Classify the message into exactly one intent:
 - plan: mark an item of today's or tomorrow's plan done or skipped, add a task to a day, or move an item to another day ("done with gym", "skip reading today", "add call mom tomorrow", "move DSA to Saturday").
@@ -20,7 +20,8 @@ export const CLASSIFY_CARD = `Classify the message into exactly one intent:
 - study_done: finished study work that is NOT simply today's planned item (e.g. "did 3 DSA problems").
 - reminder: remind me / alert me at a time or after a delay, a task due by a day, a repeating reminder, or cancelling one.
 - note: a short thing to remember for a few days ("my knee hurts, go easy on legs").
-- workout: exercises with sets/reps/weights, or a correction to sets logged today.
+- workout: exercises with sets/reps/weights to log, including a corrected list of sets for exercises already logged today.
+- workout_edit: fix one thing already logged: rename an exercise, change one set, or remove an exercise ("face full should be face pull", "set 2 of bench was 10 reps", "remove calves", "that wasn't squats, it was leg press").
 - snooze: pause the agent's messages for a while.
 - chat: anything else, including questions and small talk.
 Give a confidence from 0 to 1.`;
@@ -65,6 +66,12 @@ action: "set" (default), "cancel" ("cancel the bank reminder", "forget the gym r
 Write one entry per set: "3 sets of 15 at 20 kg" -> "20x15, 20x15, 20x15". Add " F" after a set taken to failure, "(1m)" for rest after it.
 date: only when a past day was named ("yesterday"). replace: true only for a correction ("actually", "I meant", "scratch that");
 then give the full corrected set list for that exercise, using what is logged today. pain: any pain or injury mentioned. protein_g if said.`,
+
+  workout_edit: `Fix to a workout already logged (see "Logged today" below). action:
+rename_exercise: exercise = the exercise as currently logged (the wrong name), to_name = the right name.
+amend_set: exercise, set_no (1 = first set; "the last set" = the highest number logged), field = which value changes (reps = repetition count, weight_kg = kilograms, duration_s = seconds) and value = its new number. Only one field. "set 2 was 10 reps" -> set_no 2, field reps, value 10. "set 3 was 25 kg" -> set_no 3, field weight_kg, value 25.
+remove_exercise: exercise.
+date: only when a past day was named ("yesterday"); otherwise leave empty. Never invent exercises that are not logged.`,
 
   snooze: `Snooze. duration_hours (default 2) and a short reason.`,
 

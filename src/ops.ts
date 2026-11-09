@@ -7,9 +7,10 @@
 
 import { lastInsertId } from "./db/db.ts";
 import type { Db, SqlValue } from "./db/db.ts";
-import { displayName, loadCatalog, matchExercise } from "./exercises.ts";
+import { displayName, loadCatalog, matchExercise, suggestExercise } from "./exercises.ts";
 import type { ExerciseRow } from "./exercises.ts";
-import { sessionShape } from "./fitness.ts";
+import { findSessionExercise, loadSession, sessionShape } from "./fitness.ts";
+import { formatSet } from "./sets.ts";
 import type { SetKind } from "./sets.ts";
 
 // ------------------------------------------------------------------ types
@@ -60,8 +61,16 @@ export type Op =
   | { type: "finish_reading"; reading_id: number }
   | { type: "hold_reading"; reading_id: number }
   | { type: "drop_reading"; reading_id: number; reason?: string }
-  /** One chunk of a workout. append adds sets; replace swaps the named exercises' sets ("actually it was ..."). */
-  | { type: "log_workout"; date: string; mode: "append" | "replace"; exercises: { name: string; sets: SetInput[] }[]; notes?: string; pain?: string }
+  /**
+   * One chunk of a workout. append adds sets; replace swaps the named exercises' sets ("actually it was ...").
+   * An exercise's own mode wins over the op's (restating a log replaces some exercises and extends others).
+   * learn: the spelling the user typed, saved as an alias of the exercise it resolved to.
+   */
+  | { type: "log_workout"; date: string; mode: "append" | "replace"; exercises: { name: string; sets: SetInput[]; mode?: "append" | "replace"; learn?: string }[]; notes?: string; pain?: string }
+  /** Fixes after the fact, on a day's session. rename moves (or merges) the sets of one exercise onto another. */
+  | { type: "rename_exercise"; date: string; from: string; to: string }
+  | { type: "amend_set"; date: string; exercise: string; set_no: number; weight_kg?: number; reps?: number; duration_s?: number }
+  | { type: "remove_exercise"; date: string; exercise: string }
   | { type: "log_metric"; date: string; metric: (typeof METRICS)[number]; value: number }
   | { type: "add_jot"; reading_id: number; text: string; locator?: string; kind?: (typeof JOT_KINDS)[number] }
   /** "on p140" / "ch3 done": the book's place; also ticks off that day's reading item for the book. */
@@ -242,7 +251,12 @@ export function validateOp(input: unknown): Op {
         if (typeof e !== "object" || e === null) fail("each exercise needs a name and sets");
         const eo = e as Obj;
         if (!Array.isArray(eo.sets) || eo.sets.length === 0 || eo.sets.length > 40) fail("each exercise needs 1-40 sets");
-        return { name: str(eo, "name", 100), sets: eo.sets.map(validateSet) };
+        return {
+          name: str(eo, "name", 100),
+          sets: eo.sets.map(validateSet),
+          mode: eo.mode === undefined ? undefined : oneOf(eo, "mode", ["append", "replace"] as const),
+          learn: optStr(eo, "learn", 100),
+        };
       });
       return {
         type: "log_workout",
@@ -253,6 +267,25 @@ export function validateOp(input: unknown): Op {
         pain: optStr(o, "pain", 200),
       };
     }
+    case "rename_exercise":
+      return { type: "rename_exercise", date: date(o, "date"), from: str(o, "from", 100), to: str(o, "to", 100) };
+    case "amend_set": {
+      const weight_kg = optNum(o, "weight_kg", 0, 500);
+      const reps = o.reps === undefined || o.reps === null ? null : int(o, "reps", 0, 1000);
+      const duration_s = o.duration_s === undefined || o.duration_s === null ? null : int(o, "duration_s", 1, 7200);
+      if (weight_kg === null && reps === null && duration_s === null) fail("amend_set needs a new weight, reps or duration");
+      return {
+        type: "amend_set",
+        date: date(o, "date"),
+        exercise: str(o, "exercise", 100),
+        set_no: int(o, "set_no", 1, 40),
+        ...(weight_kg !== null ? { weight_kg } : {}),
+        ...(reps !== null ? { reps } : {}),
+        ...(duration_s !== null ? { duration_s } : {}),
+      };
+    }
+    case "remove_exercise":
+      return { type: "remove_exercise", date: date(o, "date"), exercise: str(o, "exercise", 100) };
     case "log_metric": {
       const value = optNum(o, "value", 0, 1000);
       if (value === null) fail("value is required");
@@ -352,6 +385,23 @@ interface HandlerResult {
 }
 
 const iso = (d: Date) => d.toISOString();
+
+/** The reply when an edit names an exercise the day's session does not have: say what it does have. */
+function missingExercise(db: Db, date: string, name: string): string {
+  const session = loadSession(db, date);
+  if (!session || session.exercises.length === 0) return `No workout is logged for ${date}.`;
+  return `I can't find "${name}" in ${date}'s workout (${session.exercises.map((e) => e.name).join(", ")}).`;
+}
+
+/** Title and kind follow the exercises in the session, so they are recomputed after an edit. */
+function refreshShape(h: HandlerCtx, sessionId: number): void {
+  const sess = h.rec.get("workout_session", sessionId)!;
+  const shape = sessionShape(h.db, sessionId, (sess.title as string | null) ?? null);
+  const patch: Row = { version: (sess.version as number) + 1 };
+  if (shape.kind !== sess.kind) patch.kind = shape.kind;
+  if (shape.title !== sess.title) patch.title = shape.title;
+  h.rec.update("workout_session", sessionId, patch);
+}
 
 /** A day_plan row must exist for any date that has items; version tracks edits to that day. */
 function touchDay(h: HandlerCtx, day: string): void {
@@ -636,7 +686,9 @@ const HANDLERS: { [K in Op["type"]]: (h: HandlerCtx, op: Extract<Op, { type: K }
     const added: string[] = [];
     const names: string[] = [];
     let total = 0;
+    let corrected = false;
     for (const ex of op.exercises) {
+      const mode = ex.mode ?? op.mode;
       let entry = matchExercise(catalog, ex.name);
       if (!entry) {
         const name = displayName(ex.name);
@@ -644,6 +696,16 @@ const HANDLERS: { [K in Op["type"]]: (h: HandlerCtx, op: Extract<Op, { type: K }
         entry = h.rec.get("exercise_catalog", id) as unknown as ExerciseRow;
         catalog.push(entry);
         added.push(name);
+      } else if (ex.learn) {
+        // A spelling the user confirmed ("face full" = Face Pull) resolves by itself next time.
+        const aliases = JSON.parse(entry.aliases_json) as string[];
+        const have = [entry.canonical_name, ...aliases].map((a) => a.trim().toLowerCase());
+        if (!have.includes(ex.learn.trim().toLowerCase())) {
+          const next = JSON.stringify([...aliases, ex.learn.trim()]);
+          h.rec.update("exercise_catalog", entry.id, { aliases_json: next });
+          entry = { ...entry, aliases_json: next };
+          catalog[catalog.findIndex((c) => c.id === entry!.id)] = entry;
+        }
       }
       let se = h.db.all<Row>("SELECT * FROM session_exercise WHERE session_id = ? AND exercise_id = ? ORDER BY id LIMIT 1", sessionId, entry.id)[0];
       if (!se) {
@@ -654,8 +716,9 @@ const HANDLERS: { [K in Op["type"]]: (h: HandlerCtx, op: Extract<Op, { type: K }
         h.rec.update("session_exercise", se.id as number, { status: "done" });
       }
       const old = h.db.all<{ id: number; set_no: number }>("SELECT id, set_no FROM session_set WHERE session_exercise_id = ? ORDER BY set_no", se.id as number);
-      if (op.mode === "replace") for (const s of old) h.rec.delete("session_set", s.id);
-      let setNo = op.mode === "replace" ? 0 : old.reduce((m, s) => Math.max(m, s.set_no), 0);
+      if (mode === "replace") for (const s of old) h.rec.delete("session_set", s.id);
+      if (mode === "replace") corrected = true;
+      let setNo = mode === "replace" ? 0 : old.reduce((m, s) => Math.max(m, s.set_no), 0);
       for (const s of ex.sets) {
         h.rec.insert("session_set", {
           session_exercise_id: se.id as number, set_no: ++setNo, reps: s.reps, weight_kg: s.weight_kg, duration_s: s.duration_s,
@@ -681,9 +744,82 @@ const HANDLERS: { [K in Op["type"]]: (h: HandlerCtx, op: Extract<Op, { type: K }
 
     completeWorkoutItem(h, op.date, shape.kind, shape.split);
 
-    const verb = op.mode === "replace" ? "Corrected" : "Logged";
+    const verb = corrected ? "Corrected" : "Logged";
     const newOnes = added.length ? ` (new: ${added.join(", ")})` : "";
     return { lane: "fitness", refId: sessionId, summary: `${verb} ${total} set${total === 1 ? "" : "s"}: ${names.join(", ")}${newOnes}` };
+  },
+
+  rename_exercise(h, op) {
+    const se = findSessionExercise(h.db, op.date, op.from);
+    if (!se) throw new OpError(missingExercise(h.db, op.date, op.from));
+    const catalog = loadCatalog(h.db);
+    let target = matchExercise(catalog, op.to) ?? suggestExercise(catalog, op.to);
+    if (!target) {
+      const id = h.rec.insert("exercise_catalog", { canonical_name: displayName(op.to), kind: "weighted", aliases_json: "[]", source: "user" });
+      target = h.rec.get("exercise_catalog", id) as unknown as ExerciseRow;
+    }
+    if (target.id === se.exerciseId) throw new OpError(`${se.name} is already ${target.canonical_name}`);
+
+    const sessionId = h.db.all<{ session_id: number }>("SELECT session_id FROM session_exercise WHERE id = ?", se.id)[0].session_id;
+    const other = h.db.all<Row>("SELECT * FROM session_exercise WHERE session_id = ? AND exercise_id = ? AND id <> ?", sessionId, target.id, se.id)[0];
+    const moving = h.db.all<{ id: number }>("SELECT id FROM session_set WHERE session_exercise_id = ? ORDER BY set_no, id", se.id);
+    if (other) {
+      // The target is already in the session: its sets and these become one list.
+      let setNo = h.db.all<{ m: number | null }>("SELECT MAX(set_no) AS m FROM session_set WHERE session_exercise_id = ?", other.id as number)[0].m ?? 0;
+      for (const s of moving) h.rec.update("session_set", s.id, { session_exercise_id: other.id as number, set_no: ++setNo });
+      h.rec.delete("session_exercise", se.id);
+    } else {
+      h.rec.update("session_exercise", se.id, { exercise_id: target.id, display_name: target.canonical_name });
+    }
+
+    // A catalog entry the user made up (not from the seed) that nothing uses any more was a wrong spelling:
+    // drop it, and keep the spelling as an alias of the right exercise.
+    const wrong = se.exerciseId === null ? null : (h.rec.get("exercise_catalog", se.exerciseId) as unknown as (ExerciseRow & { source: string }) | null);
+    if (wrong && wrong.source === "user" && wrong.id !== target.id) {
+      const stillUsed = h.db.all("SELECT 1 FROM session_exercise WHERE exercise_id = ? LIMIT 1", wrong.id).length > 0;
+      if (!stillUsed) {
+        h.rec.delete("exercise_catalog", wrong.id);
+        const aliases = JSON.parse(target.aliases_json) as string[];
+        const have = [target.canonical_name, ...aliases].map((a) => a.toLowerCase());
+        if (!have.includes(wrong.canonical_name.toLowerCase())) {
+          h.rec.update("exercise_catalog", target.id, { aliases_json: JSON.stringify([...aliases, wrong.canonical_name]) });
+        }
+      }
+    }
+    refreshShape(h, sessionId);
+    return {
+      lane: "fitness",
+      refId: sessionId,
+      summary: other ? `Merged ${se.name} into ${target.canonical_name}` : `Renamed ${se.name} to ${target.canonical_name}`,
+    };
+  },
+
+  amend_set(h, op) {
+    const se = findSessionExercise(h.db, op.date, op.exercise);
+    if (!se) throw new OpError(missingExercise(h.db, op.date, op.exercise));
+    const row = h.db.all<Row>("SELECT * FROM session_set WHERE session_exercise_id = ? AND set_no = ?", se.id, op.set_no)[0];
+    if (!row) throw new OpError(`${se.name} has ${se.sets.length} set${se.sets.length === 1 ? "" : "s"}, so there is no set ${op.set_no}`);
+    const patch: Row = { incomplete: 0 };
+    if (op.weight_kg !== undefined) patch.weight_kg = op.weight_kg;
+    if (op.reps !== undefined) patch.reps = op.reps;
+    if (op.duration_s !== undefined) patch.duration_s = op.duration_s;
+    const after = h.rec.update("session_set", row.id as number, patch);
+    const text = (r: Row) =>
+      formatSet({ weight_kg: r.weight_kg as number | null, reps: r.reps as number | null, duration_s: r.duration_s as number | null, kind: r.kind as SetKind, bw: r.bw === 1, incomplete: r.incomplete === 1 });
+    return { lane: "fitness", refId: row.id as number, summary: `${se.name} set ${op.set_no}: ${text(row)} → ${text(after)}` };
+  },
+
+  remove_exercise(h, op) {
+    const se = findSessionExercise(h.db, op.date, op.exercise);
+    if (!se) throw new OpError(missingExercise(h.db, op.date, op.exercise));
+    const sessionId = h.db.all<{ session_id: number }>("SELECT session_id FROM session_exercise WHERE id = ?", se.id)[0].session_id;
+    for (const s of h.db.all<{ id: number }>("SELECT id FROM session_set WHERE session_exercise_id = ?", se.id)) h.rec.delete("session_set", s.id);
+    h.rec.delete("session_exercise", se.id);
+    const left = h.db.all("SELECT 1 FROM session_exercise WHERE session_id = ? LIMIT 1", sessionId).length;
+    // A day with nothing left is a day with no workout: the absence is the record.
+    if (left === 0) h.rec.delete("workout_session", sessionId);
+    else refreshShape(h, sessionId);
+    return { lane: "fitness", refId: sessionId, summary: `Removed ${se.name} (${se.sets.length} set${se.sets.length === 1 ? "" : "s"})` };
   },
 
   log_metric(h, op) {

@@ -6,6 +6,7 @@
 // changes afterwards goes through ops.
 
 import type { Db } from "./db/db.ts";
+import type { ChooseOption } from "./convo.ts";
 import { bedtimeFor, draftDay } from "./plan.ts";
 import type { DayKind, DraftDay, OverrideKind, Place, PlanInput, PlanReading, PlanUnit } from "./plan.ts";
 import { currentReading } from "./reading.ts";
@@ -283,7 +284,7 @@ const LANE_WORDS: Record<string, string> = {
  * Finds one plan item on the given dates (in order of preference) from a word or title fragment.
  * Returns the item, or an HTML reply when nothing or several things match.
  */
-export function resolvePlanItem(db: Db, ref: string, dates: string[], statuses: string[]): { item: ItemRow } | { reply: string } {
+export function resolvePlanItem(db: Db, ref: string, dates: string[], statuses: string[]): { item: ItemRow } | { reply: string; options?: ChooseOption[] } {
   const want = ref.trim().toLowerCase();
   for (const date of dates) {
     const items = loadItems(db, date).filter((i) => statuses.includes(i.status));
@@ -294,7 +295,10 @@ export function resolvePlanItem(db: Db, ref: string, dates: string[], statuses: 
     if (hits.length > 1) {
       const required = hits.filter((i) => !i.optional);
       if (required.length === 1) return { item: required[0] };
-      return { reply: `Which one on ${dateLabel(date)}?\n${hits.map((i) => `• ${esc(i.title)}`).join("\n")}` };
+      return {
+        reply: `Which one on ${dateLabel(date)}?\n${hits.map((i, n) => `${n + 1}. ${esc(i.title)}`).join("\n")}\n<i>Reply with a number, "all", or "neither".</i>`,
+        options: hits.map((i) => ({ id: i.id, title: i.title })),
+      };
     }
   }
   return { reply: `I couldn't find "${esc(ref)}" in the plan for ${dates.map(dateLabel).join(" or ")}. /plan shows it.` };

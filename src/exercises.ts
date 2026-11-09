@@ -123,6 +123,46 @@ export function findExercise(db: Db, name: string): ExerciseRow | null {
   return matchExercise(loadCatalog(db), name);
 }
 
+/** Edit distance where swapping two neighbouring letters counts as one change ("pulll" / "pull", "prses" / "press"). */
+export function editDistance(a: string, b: string): number {
+  const d: number[][] = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array<number>(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+    }
+  }
+  return d[a.length][b.length];
+}
+
+/**
+ * The catalog entry a name that matched nothing most likely means: "face full" -> Face Pull.
+ * Allows about one wrong letter in seven, only for names of 5+ letters, and only when one entry is clearly
+ * the closest. A name that already resolves (matchExercise) returns null: nothing to suggest.
+ */
+export function suggestExercise(rows: ExerciseRow[], name: string): ExerciseRow | null {
+  const typed = normalizeName(name);
+  const flat = typed.replace(/ /g, "");
+  if (flat.length < 5 || matchExercise(rows, name)) return null;
+  const sorted = key(name);
+  const limit = Math.max(1, Math.floor(flat.length * 0.15));
+  const scored = rows.map((r) => {
+    const names = [r.canonical_name, ...(JSON.parse(r.aliases_json) as string[])];
+    // Spelled as typed, with the words in any order, and with spaces ignored ("pulldown" / "pull down").
+    const best = Math.min(...names.map((n) => Math.min(
+      editDistance(typed, normalizeName(n)),
+      editDistance(sorted, key(n)),
+      editDistance(flat, normalizeName(n).replace(/ /g, "")),
+    )));
+    return { r, best };
+  }).filter((s) => s.best <= limit).sort((a, b) => a.best - b.best);
+  if (scored.length === 0) return null;
+  if (scored.length > 1 && scored[1].best === scored[0].best) return null;
+  return scored[0].r;
+}
+
 /** Title case for a name typed the first time: "cable crossover" -> "Cable Crossover". */
 export function displayName(name: string): string {
   const t = name.trim().replace(/\s+/g, " ");

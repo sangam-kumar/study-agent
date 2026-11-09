@@ -16,6 +16,10 @@ import type { ApplyOptions, ApplyResult, UndoResult } from "./ops.ts";
 import { SerialQueue } from "./queue.ts";
 import { SeedError, loadStudySeed, queryPlan } from "./seed.ts";
 import { ResetError, parseScopes, resetData as resetRows } from "./reset.ts";
+import { answerChoice, answerConfirm, choiceOps, clearPending, getLast, getPending, setLast, setPending } from "./convo.ts";
+import type { Pending } from "./convo.ts";
+import { ViewError, readView as readViewRows } from "./views.ts";
+import type { ViewResult } from "./views.ts";
 import { loadConfigSeed } from "./seed-config.ts";
 import { loadReadingSeed } from "./seed-reading.ts";
 import {
@@ -34,8 +38,10 @@ import {
 import { GitHubClient } from "./github/client.ts";
 import { mirrorDays } from "./mirror.ts";
 import {
-  closeOpenSessions, findRepeat, importGymLog, parseChatWorkout, parseProtein, renderGymWeek, renderLiftHistory, renderSession,
+  closeOpenSessions, diffSessions, importGymLog, loadSession, parseChatWorkout, parseExerciseEdit, parseProtein, reconcileWorkout, renameInOp,
+  renderGymWeek, renderLiftHistory, renderSession, unsureNames,
 } from "./fitness.ts";
+import { findExercise, loadCatalog, matchExercise, suggestExercise } from "./exercises.ts";
 import type { LogWorkoutOp } from "./fitness.ts";
 import {
   NUDGE_BUTTONS, PAUSE_BUTTONS, SILENT_MUTE_DAYS, closeIgnoredNudge, nudgeGate, nudgeStatus, nudgeText, pauseQuestion, pickNudge,
@@ -145,6 +151,19 @@ export class StudyAgent extends Agent<Env> {
       if (err instanceof ResetError) return { ok: false, error: err.message };
       console.error("Reset failed:", err);
       return { ok: false, error: "reset failed (see worker logs)" };
+    }
+  }
+
+  // --- Read-only views (called by GET /admin/view/<name>) ---
+
+  /** Returns a result object rather than throwing, like resetData: errors do not cross the RPC boundary reliably. */
+  readView(name: string, params: Record<string, string>): { ok: true; result: ViewResult } | { ok: false; error: string } {
+    try {
+      return { ok: true, result: readViewRows(doDb(this.ctx), name, params, Date.now()) };
+    } catch (err) {
+      if (err instanceof ViewError) return { ok: false, error: err.message };
+      console.error("Read view failed:", err);
+      return { ok: false, error: "read failed (see worker logs)" };
     }
   }
 
@@ -366,6 +385,16 @@ Total queued articles: <b>${count}</b>`
     const today = dayKey(nowMs);
     const tomorrow = addDays(today, 1);
 
+    // An open question ("Which one?") comes first: a reply that answers it is handled here, no model.
+    const open = getPending(db, nowMs);
+    if (open) {
+      const answered = this.answerPending(open, text, nowMs);
+      if (answered !== null) {
+        await telegram.sendMessage(chatId, answered);
+        return;
+      }
+    }
+
     // "ok" after the evening message locks tomorrow. No model needed.
     if (/^(ok|okay|ok lock|lock|lock it|looks good|sounds good|good|fine|yes|yep|👍)[.!]?$/i.test(text.trim()) && eventExists(db, "evening_recap", today) && loadDayRow(db, tomorrow)?.status === "draft") {
       lockDay(db, tomorrow, "user", nowMs);
@@ -390,15 +419,6 @@ Total queued articles: <b>${count}</b>`
     if (officeDays) {
       await telegram.sendMessage(chatId, this.applyOfficeDays(officeDays));
       return;
-    }
-
-    // "add again" after a repeat was held back.
-    if (/^(?:add (?:it |them )?again|log (?:it |them )?anyway|again)[.!]?$/i.test(text.trim())) {
-      const pending = this.takePendingWorkout(nowMs);
-      if (pending) {
-        await telegram.sendMessage(chatId, this.logWorkout(pending, text, { allowRepeat: true }));
-        return;
-      }
     }
 
     // "protein 110": one number a day, no model needed.
@@ -426,6 +446,14 @@ Total queued articles: <b>${count}</b>`
       return;
     }
 
+    // "face full should be face pull" / "set 2 of bench was 10 reps" / "remove calves": a fix to today's log, no model.
+    const edit = parseExerciseEdit(db, text, today, getLast(db, nowMs)?.exercises ?? []);
+    if (edit) {
+      const reply = this.runOps([edit], text);
+      await telegram.sendMessage(chatId, reply.includes("✅") ? `${reply}\n\n${renderSession(db, today)}` : reply);
+      return;
+    }
+
     // Sets typed in the notation ("bench 20x15, 22.5x12"): read by code, no model.
     const typed = parseChatWorkout(db, text, nowMs);
     if (typed) {
@@ -438,19 +466,17 @@ Total queued articles: <b>${count}</b>`
 
     switch (outcome.kind) {
       case "ops": {
-        const lines: string[] = [];
-        try {
-          for (const op of outcome.ops) lines.push(`✅ ${escapeHtml(this.applyPlanOp(op, { source: "telegram", raw: text }).summary)}`);
-        } catch (err) {
-          if (!(err instanceof OpError)) throw err;
-          lines.push(`⚠️ ${escapeHtml(err.message)}`);
-        }
-        const undoable = lines.some((l) => l.startsWith("✅"));
-        const replanned = undoable ? this.replanAfterChange(today, outcome.affects) : [];
-        const updates = replanned.map((d) => `\n\n<b>${dateLabel(d)} now:</b>\n${renderDayBlock(db, d)}`).join("");
-        await telegram.sendMessage(chatId, `${lines.join("\n")}${undoable ? "\n<i>/undo to reverse</i>" : ""}${updates}${heard}`);
+        const body = this.runOps(outcome.ops, text, outcome.affects);
+        // After a workout fix, show the session as it now stands.
+        const fixed = outcome.ops.find((o) => ["rename_exercise", "amend_set", "remove_exercise"].includes(String(o.type)));
+        const session = fixed && body.includes("✅") ? `\n\n${renderSession(db, String(fixed.date))}` : "";
+        await telegram.sendMessage(chatId, `${body}${session}${heard}`);
         return;
       }
+      case "choose":
+        setPending(db, nowMs, outcome.pending);
+        await telegram.sendMessage(chatId, `${outcome.html}${heard}`);
+        return;
       case "reminder":
         await telegram.sendMessage(chatId, `${await this.scheduleReminderAt(outcome.dueMs, outcome.text, outcome.repeat)}${heard}`);
         return;
@@ -485,43 +511,114 @@ Total queued articles: <b>${count}</b>`
     }
   }
 
+  /** Applies ops one by one and builds the reply: what changed, what failed, and any re-planned days. */
+  private runOps(ops: Record<string, unknown>[], raw: string, affects?: { from: string; to: string }): string {
+    const db = doDb(this.ctx);
+    const today = dayKey(Date.now());
+    const lines: string[] = [];
+    try {
+      for (const op of ops) lines.push(`✅ ${escapeHtml(this.applyPlanOp(op, { source: "telegram", raw }).summary)}`);
+    } catch (err) {
+      if (!(err instanceof OpError)) throw err;
+      lines.push(`⚠️ ${escapeHtml(err.message)}`);
+    }
+    const undoable = lines.some((l) => l.startsWith("✅"));
+    const replanned = undoable ? this.replanAfterChange(today, affects) : [];
+    const updates = replanned.map((d) => `\n\n<b>${dateLabel(d)} now:</b>\n${renderDayBlock(db, d)}`).join("");
+    return `${lines.join("\n")}${undoable ? "\n<i>/undo to reverse</i>" : ""}${updates}`;
+  }
+
+  /** The reply when a message answers the open question; null when it does not (the message then carries on as normal). */
+  private answerPending(p: Pending, text: string, nowMs: number): string | null {
+    const db = doDb(this.ctx);
+    if (p.kind === "choose_item") {
+      const a = answerChoice(text, p.options);
+      if (a === null) return null;
+      clearPending(db);
+      if (a === "cancel") return "👌 Left as it was.";
+      return this.runOps(choiceOps(p, a.ids), text);
+    }
+    if (p.kind === "confirm_exercise") {
+      const a = answerConfirm(text);
+      if (a === null) return null;
+      if (a === "cancel") {
+        clearPending(db);
+        return "👌 Not logged. Send it again with the right name.";
+      }
+      let op = p.op;
+      if (a === "yes") {
+        op = renameInOp(p.op, Object.fromEntries(p.asked.map((x) => [x.typed, x.suggestion])));
+      } else if (a !== "new") {
+        // Another name: it must be an exercise we know, and only makes sense when one name was asked about.
+        const rows = loadCatalog(db);
+        const hit = p.asked.length === 1 ? (matchExercise(rows, a.name) ?? suggestExercise(rows, a.name)) : null;
+        if (!hit) return null;
+        op = renameInOp(p.op, { [p.asked[0].typed]: hit.canonical_name });
+      }
+      clearPending(db);
+      return this.logWorkout(op, text, { checked: true });
+    }
+    if (p.kind === "repeat_workout") {
+      if (!/^(?:add (?:it |them )?again|log (?:it |them )?anyway|again)[.!]?$/i.test(text.trim())) return null;
+      clearPending(db);
+      return this.logWorkout(p.op, text, { force: true, checked: true });
+    }
+    void nowMs;
+    return null;
+  }
+
   // --- Fitness (fitness.ts reads and renders, the log_workout op writes) ---
 
   /**
-   * Applies one chunk and replies with the day's session. The same sets sent again within 15 minutes
-   * are held back with a question ("add again" logs them) instead of being counted twice.
+   * Applies one chunk and replies with the day's session. Each exercise is compared with what the day already
+   * holds (reconcileWorkout), so a message that repeats the log changes only what differs; a message that adds
+   * nothing is held with a question ("add again" logs it anyway). What changed is shown, and /undo reverses it.
    */
-  private logWorkout(op: LogWorkoutOp, raw: string, opts: { allowRepeat?: boolean } = {}): string {
+  private logWorkout(op: LogWorkoutOp, raw: string, opts: { force?: boolean; checked?: boolean } = {}): string {
     const db = doDb(this.ctx);
     const nowMs = Date.now();
-    const firstAt = opts.allowRepeat ? null : findRepeat(db, op, nowMs);
-    if (firstAt) {
-      this.setBotConfig("fitness_pending", JSON.stringify({ op, until: nowMs + 15 * 60_000 }));
-      const at = new Date(firstAt).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: "numeric", minute: "2-digit" });
-      return `🤔 That's the same as what you sent at ${at}, so I didn't add it again.\nSay <b>add again</b> if you really did those sets twice.`;
+    // A name that looks like a misspelling of a known exercise is confirmed first; nothing is written until then.
+    if (!opts.checked) {
+      const asked = unsureNames(db, op);
+      if (asked.length > 0) {
+        setPending(db, nowMs, { kind: "confirm_exercise", op, asked });
+        const one = asked.length === 1;
+        const lines = asked.map((a) => `“${escapeHtml(a.typed)}” → <b>${escapeHtml(a.suggestion)}</b>`).join("\n");
+        return `🤔 ${one ? "Is this the exercise you meant?" : "Are these the exercises you meant?"}\n${lines}\n<i>Nothing is logged yet. Reply <b>yes</b>, <b>new</b> (add ${one ? "it" : "them"} as new), or ${one ? "the right name" : "cancel"}.</i>`;
+      }
     }
-    let summary: string;
+    let toApply = op;
+    const notes: string[] = [];
+    if (!opts.force) {
+      const r = reconcileWorkout(db, op);
+      if (!r.op) {
+        setPending(db, nowMs, { kind: "repeat_workout", op });
+        return `🤔 That's already logged (${r.unchanged.map(escapeHtml).join(", ")}), so I didn't add it again.\nSay <b>add again</b> if you really did those sets twice.`;
+      }
+      toApply = r.op;
+      if (r.unchanged.length > 0) notes.push(`already had ${r.unchanged.map(escapeHtml).join(", ")}`);
+      for (const e of r.extended) notes.push(`${escapeHtml(e.name)}: kept your earlier sets, added ${e.added} new`);
+    }
+    const before = loadSession(db, op.date);
+    let applied: { summary: string; revisionId: number };
     try {
-      summary = this.applyPlanOp(op, { source: "telegram", raw }).summary;
+      applied = this.applyPlanOp(toApply, { source: "telegram", raw });
     } catch (err) {
       if (!(err instanceof OpError)) throw err;
       return `⚠️ ${escapeHtml(err.message)}`;
     }
+    const diff = diffSessions(before, loadSession(db, op.date));
+    setLast(db, nowMs, {
+      summary: applied.summary,
+      revisionId: applied.revisionId,
+      date: op.date,
+      exercises: toApply.exercises.map((e) => findExercise(db, e.name)?.canonical_name ?? e.name),
+    });
     // The rotation may have moved on: tomorrow's draft should offer the next split.
     this.replanAfterChange(dayKey(nowMs));
-    return `✅ ${escapeHtml(summary)}\n\n${renderSession(db, op.date)}\n<i>/undo to reverse</i>`;
-  }
-
-  private takePendingWorkout(nowMs: number): LogWorkoutOp | null {
-    const raw = this.getBotConfig("fitness_pending");
-    if (!raw) return null;
-    this.setBotConfig("fitness_pending", "");
-    try {
-      const p = JSON.parse(raw) as { op: LogWorkoutOp; until: number };
-      return p.until > nowMs ? p.op : null;
-    } catch {
-      return null;
-    }
+    const changed = diff.changed ? `✏️ <b>Changed</b>\n${diff.lines.join("\n")}\n\n` : "";
+    const aside = notes.length > 0 ? `<i>${notes.join(" · ")}</i>\n` : "";
+    return `${changed}${aside}✅ ${escapeHtml(applied.summary)}\n\n${renderSession(db, op.date)}\n<i>/undo to reverse</i>`;
   }
 
   // --- Day loop (plan.ts drafts, day.ts stores and renders, jobs.ts times it) ---
@@ -766,7 +863,10 @@ Total queued articles: <b>${count}</b>`
           "",
           "🏋️ <b>Gym</b>",
           "• Type sets as you go: <i>bench 20x15, 22.5x12, 25x8F</i> (kg × reps; <i>BWx20</i>, <i>30s</i>, <i>7kg</i>, <i>15 reps</i>; <i>(1m)</i> = rest). Voice works too.",
-          "• Several messages make one session for the day. Fix one: <i>actually bench was 22.5x10</i>. Logging ticks off the gym item and moves the split on.",
+          "• Several messages make one session for the day. Logging ticks off the gym item and moves the split on. Sending the same sets again changes nothing; sending the log again with one set different changes only that set, and I show what changed.",
+          "• Fix it in plain words: <i>face full should be face pull</i> · <i>set 2 of bench was 10 reps</i> · <i>actually bench was 22.5x10</i> · <i>remove calves</i>. <code>/undo</code> reverses any of them.",
+          "• A name that looks like a misspelling of one I know (<i>face full</i>) gets a question first: reply <b>yes</b>, <b>new</b>, or the right name. I remember the spelling next time.",
+          "• When I ask \"which one?\", just answer: <i>both</i>, <i>1</i>, <i>the second</i>, <i>neither</i>.",
           "• <code>/gym</code> - This week (lifts, mobility, protein) and the last session · <code>/gym yesterday</code>",
           "• <code>/lift bench</code> - Last few times and your best set",
           "• <i>protein 110</i> or <code>/protein 110</code> - Today's protein (I ask in the evening)",

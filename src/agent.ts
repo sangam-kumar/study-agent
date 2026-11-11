@@ -38,7 +38,7 @@ import {
 import { GitHubClient } from "./github/client.ts";
 import { mirrorDays } from "./mirror.ts";
 import {
-  closeOpenSessions, diffSessions, importGymLog, loadSession, parseChatWorkout, parseExerciseEdit, parseProtein, reconcileWorkout, renameInOp,
+  closeOpenSessions, diffSessions, importGymLog, loadSession, reconcileWorkout, renameInOp,
   renderGymWeek, renderLiftHistory, renderSession, unsureNames,
 } from "./fitness.ts";
 import { findExercise, loadCatalog, matchExercise, suggestExercise } from "./exercises.ts";
@@ -48,7 +48,7 @@ import {
   recordAgentMessage, recordNudgeAnswer, recordNudgeSent, shouldAskPause,
 } from "./nudge.ts";
 import { renderWeekly } from "./weekly.ts";
-import { booksWithJots, findBook, jotKind as jotKindOf, notesPath, parseJotText, renderJots, renderNotesMarkdown, soleCurrentBook } from "./jots.ts";
+import { booksWithJots, findBook, notesPath, renderJots, renderNotesMarkdown, soleCurrentBook } from "./jots.ts";
 
 /** Processed-update rows older than this are pruned; replays beyond it are not a concern. */
 const PROCESSED_UPDATE_TTL_MS = 7 * 24 * 3600 * 1000;
@@ -418,46 +418,6 @@ Total queued articles: <b>${count}</b>`
     const officeDays = office ? parseWeekdays(office[1]) : null;
     if (officeDays) {
       await telegram.sendMessage(chatId, this.applyOfficeDays(officeDays));
-      return;
-    }
-
-    // "protein 110": one number a day, no model needed.
-    const protein = parseProtein(text);
-    if (protein !== null) {
-      this.applyPlanOp({ type: "log_metric", date: today, metric: "protein_g", value: protein }, { source: "telegram", raw: text });
-      await telegram.sendMessage(chatId, `🥩 Protein today: <b>${protein} g</b>\n<i>/undo to reverse · /gym for the week</i>`);
-      return;
-    }
-
-    // "ch3: …" / "jot: …" / "finished ch3" / "on p140" about the one book being read: no model.
-    const jot = parseJotText(text);
-    const sole = jot ? soleCurrentBook(db) : null;
-    if (jot && sole) {
-      const op = jot.kind === "jot"
-        ? { type: "add_jot", reading_id: sole.id, text: jot.text, locator: jot.locator ?? undefined, kind: jotKindOf(jot.text) }
-        : { type: "set_progress", reading_id: sole.id, locator: jot.locator, date: today };
-      try {
-        const res = this.applyPlanOp(op, { source: "telegram", raw: text });
-        await telegram.sendMessage(chatId, `📝 ${escapeHtml(res.summary)}\n<i>/jots to see them · /undo to reverse</i>`);
-      } catch (err) {
-        if (!(err instanceof OpError)) throw err;
-        await telegram.sendMessage(chatId, `⚠️ ${escapeHtml(err.message)}`);
-      }
-      return;
-    }
-
-    // "face full should be face pull" / "set 2 of bench was 10 reps" / "remove calves": a fix to today's log, no model.
-    const edit = parseExerciseEdit(db, text, today, getLast(db, nowMs)?.exercises ?? []);
-    if (edit) {
-      const reply = this.runOps([edit], text);
-      await telegram.sendMessage(chatId, reply.includes("✅") ? `${reply}\n\n${renderSession(db, today)}` : reply);
-      return;
-    }
-
-    // Sets typed in the notation ("bench 20x15, 22.5x12"): read by code, no model.
-    const typed = parseChatWorkout(db, text, nowMs);
-    if (typed) {
-      await telegram.sendMessage(chatId, this.logWorkout(typed, text));
       return;
     }
 

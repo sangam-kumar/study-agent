@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { applyOp, undoLast } from "../src/ops.ts";
 import type { Op } from "../src/ops.ts";
 import { editDistance, findExercise, loadCatalog, suggestExercise } from "../src/exercises.ts";
-import { diffSessions, loadSession, parseExerciseEdit, reconcileWorkout, renameInOp, setsText, unsureNames } from "../src/fitness.ts";
+import { diffSessions, loadSession, reconcileWorkout, renameInOp, setsText, unsureNames } from "../src/fitness.ts";
 import type { LogWorkoutOp } from "../src/fitness.ts";
 import { count, migratedDb } from "./helpers.ts";
 
@@ -272,44 +272,3 @@ test("remove_exercise removes the sets; removing the last exercise removes the s
   assert.deepEqual(names(db), [BENCH, "Seated Row"]);
 });
 
-test("edit phrases are read in plain words, only when the exercise is in today's session", () => {
-  const db = withTypo();
-  const edit = (t: string, last: string[] = []) => parseExerciseEdit(db, t, DAY, last);
-
-  assert.deepEqual(edit("face full should be face pull"), { type: "rename_exercise", date: DAY, from: "face full", to: "face pull" });
-  assert.deepEqual(edit("Face full is actually face pull."), { type: "rename_exercise", date: DAY, from: "Face full", to: "face pull" });
-  assert.deepEqual(edit("it was face pull, not face full"), { type: "rename_exercise", date: DAY, from: "face full", to: "face pull" });
-  assert.deepEqual(edit("no, it was face pull not face full"), { type: "rename_exercise", date: DAY, from: "face full", to: "face pull" });
-
-  // "no, face pull" refers to the one exercise the last log touched
-  assert.deepEqual(edit("no, face pull", ["Face Full"]), { type: "rename_exercise", date: DAY, from: "Face Full", to: "Face Pull" });
-  assert.equal(edit("no, face pull", []), null, "nothing to refer to");
-  assert.equal(edit("no, face pull", ["Face Full", "Seated Row"]), null, "two exercises: ambiguous");
-  assert.equal(edit("no, face pull", ["Face Pull"]), null, "already that exercise");
-  assert.equal(edit("no thanks", ["Face Full"]), null);
-
-  assert.deepEqual(edit("set 2 of seated row was 10 reps"), { type: "amend_set", date: DAY, exercise: "seated row", set_no: 2, reps: 10 });
-  assert.deepEqual(edit("seated row set 1 was 32.5x10"), { type: "amend_set", date: DAY, exercise: "seated row", set_no: 1, weight_kg: 32.5, reps: 10 });
-  assert.deepEqual(edit("2nd set of face pull is 20 kg"), { type: "amend_set", date: DAY, exercise: "face pull", set_no: 2, weight_kg: 20 });
-  assert.deepEqual(edit("seated row set 2 was 10 not 12"), { type: "amend_set", date: DAY, exercise: "seated row", set_no: 2, reps: 10 });
-
-  assert.deepEqual(edit("remove seated row"), { type: "remove_exercise", date: DAY, exercise: "seated row" });
-  assert.deepEqual(edit("delete face full from today's workout"), { type: "remove_exercise", date: DAY, exercise: "face full" });
-});
-
-test("ordinary sentences are not edits", () => {
-  const db = withTypo();
-  for (const t of [
-    "bench should be 22.5x10", // a value, not a name
-    "squat should be face pull", // not in the session
-    "remove the reminder",
-    "drop Sapiens",
-    "delete squat",
-    "set 2 of squat was 10 reps",
-    "what should be my protein today",
-    "the gym was actually fun",
-    "",
-    "x".repeat(200),
-  ]) assert.equal(parseExerciseEdit(db, t, DAY, ["Face Full"]), null, t);
-  assert.equal(parseExerciseEdit(db, "set 2 of seated row was 10 reps", "2026-11-04"), null, "no session that day");
-});

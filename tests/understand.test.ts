@@ -288,3 +288,13 @@ test("workout_edit sees what is logged today and today's calendar", () => {
   assert.match(p.user, /today Fri 30 Oct = 2026-10-30/);
   assert.match(p.system, /rename_exercise: exercise = the exercise as currently logged/);
 });
+
+test("metric: protein becomes a log_metric op, a past day is allowed, nonsense is rejected", async () => {
+  const db = world();
+  const today = await run(db, model("metric", 0.9, { metric: "protein_g", value: 110 }), "protein 110");
+  assert.deepEqual(today, { kind: "ops", ops: [{ type: "log_metric", date: "2026-10-30", metric: "protein_g", value: 110 }] });
+  const past = await run(db, model("metric", 0.9, { metric: "protein_g", value: 95, date: "2026-10-28" }), "had 95 g protein on Wednesday");
+  assert.deepEqual(past, { kind: "ops", ops: [{ type: "log_metric", date: "2026-10-28", metric: "protein_g", value: 95 }] });
+  const bad = await run(db, model("metric", 0.9, { metric: "protein_g", value: 5000 }), "protein 5000");
+  assert.equal(bad.kind, "inbox");
+});

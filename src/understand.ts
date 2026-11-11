@@ -195,6 +195,14 @@ const EXTRACT_SCHEMAS: Record<Intent, JsonSchema> = {
     },
     ["action", "exercise", "field", "value"],
   ),
+  metric: S(
+    {
+      metric: { type: "string", enum: ["protein_g"] },
+      value: { type: "number", description: "grams" },
+      date: { type: "string", description: "YYYY-MM-DD only if a past day was named, else empty" },
+    },
+    ["metric", "value"],
+  ),
   snooze: S({ duration_hours: { type: "number" }, reason: { type: "string" } }, ["reason"]),
   chat: S({ reply: { type: "string" } }, ["reply"]),
 };
@@ -355,6 +363,20 @@ const LANE_HANDLERS: Record<Intent, (db: Db, nowMs: number) => { validate: (raw:
       if (v.dueDate) return { kind: "task", text: v.text!, dueDate: v.dueDate };
       return { kind: "reminder", text: v.text!, dueMs: v.dueMs!, ...(v.repeat ? { repeat: v.repeat } : {}) };
     },
+  }),
+
+  metric: (_db, nowMs) => ({
+    validate: (raw) => {
+      const o = asObj(raw);
+      const today = dayKey(nowMs);
+      const date = optStr(o, "date", 10) ?? today;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date > today || date < addDays(today, -7)) throw new ValidationError("date must be today or one of the last 7 days");
+      return { metric: oneOf(o, "metric", ["protein_g"] as const), value: Math.round(num(o, "value", 1, 400)), date };
+    },
+    map: (v: { metric: "protein_g"; value: number; date: string }): Outcome => ({
+      kind: "ops",
+      ops: [{ type: "log_metric", date: v.date, metric: v.metric, value: v.value }],
+    }),
   }),
 
   note: () => ({

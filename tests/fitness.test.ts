@@ -7,12 +7,12 @@ import { ensureDraft, getConfig, loadItems, renderEvening } from "../src/day.ts"
 import { renderDailyBlock } from "../src/mirror.ts";
 import { findExercise, matchExercise, loadCatalog, normalizeName } from "../src/exercises.ts";
 import {
-  closeOpenSessions, findRepeat, importGymLog, loadSession, migrateV1Workouts, parseChatWorkout, parseProtein,
+  closeOpenSessions, findRepeat, importGymLog, loadSession, migrateV1Workouts,
   renderGymWeek, renderLiftHistory, weekFitness, weeklyFitnessParts,
 } from "../src/fitness.ts";
 import type { LogWorkoutOp } from "../src/fitness.ts";
 import { istWallToMs } from "../src/time.ts";
-import { count, migratedDb } from "./helpers.ts";
+import { count, migratedDb, parseChatWorkout } from "./helpers.ts";
 
 const MON = "2026-11-02"; // a GYM day in the seeded pattern
 const TUE = "2026-11-03";
@@ -90,12 +90,6 @@ test("typed sets are read in code; ordinary messages are not mistaken for sets",
   }
 });
 
-test("protein is one number", () => {
-  for (const [t, v] of [["protein 110", 110], ["protein ~95g", 95], ["Protein: 120 g", 120], ["had 120 g protein today", 120], ["100g protein", 100]] as const) {
-    assert.equal(parseProtein(t), v, t);
-  }
-  for (const t of ["protein shake", "protein 2000", "110"]) assert.equal(parseProtein(t), null, t);
-});
 
 // ----------------------------------------------------------------- sessions
 

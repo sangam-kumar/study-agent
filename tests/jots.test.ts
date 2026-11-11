@@ -4,7 +4,7 @@ import { applyOp, undoLast } from "../src/ops.ts";
 import { loadReadingSeed } from "../src/seed-reading.ts";
 import { ensureDraft, loadItems } from "../src/day.ts";
 import {
-  booksWithJots, findBook, jotKind, normalizeLocator, notesPath, parseJotText, renderJots, renderNotesMarkdown, soleCurrentBook,
+  booksWithJots, findBook, jotKind, normalizeLocator, notesPath, renderJots, renderNotesMarkdown, soleCurrentBook,
 } from "../src/jots.ts";
 import { mirrorDays } from "../src/mirror.ts";
 import { resetData, parseScopes } from "../src/reset.ts";
@@ -34,14 +34,7 @@ function world(start: string[] = ["l1"]) {
 }
 const id = (db: ReturnType<typeof world>, key: string) => db.all<{ id: number }>("SELECT id FROM reading_item WHERE seed_key = ?", key)[0].id;
 
-test("jot and progress phrases are read in code", () => {
-  assert.deepEqual(parseJotText("ch3: leader-based replication, lag breaks read-your-writes"), { kind: "jot", locator: "ch3", text: "leader-based replication, lag breaks read-your-writes" });
-  assert.deepEqual(parseJotText("Chapter 5 - quorums need w + r > n"), { kind: "jot", locator: "ch5", text: "quorums need w + r > n" });
-  assert.deepEqual(parseJotText("p120: why not 2PC here?"), { kind: "jot", locator: "p120", text: "why not 2PC here?" });
-  assert.deepEqual(parseJotText("jot: consistency is a spectrum"), { kind: "jot", locator: null, text: "consistency is a spectrum" });
-  assert.deepEqual(parseJotText("finished ch3"), { kind: "progress", locator: "ch3 done" });
-  assert.deepEqual(parseJotText("on page 140"), { kind: "progress", locator: "p140" });
-  for (const t of ["bench 20x15", "done with gym", "office tue thu", "ch3", "on it", "protein 110", "remind me at 6"]) assert.equal(parseJotText(t), null, t);
+test("locators and jot kinds", () => {
   assert.equal(normalizeLocator("Chapter 12"), "ch12");
   assert.equal(jotKind('"Data outlives code"'), "quote");
   assert.equal(jotKind("why does Raft need a leader?"), "question");

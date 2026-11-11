@@ -41,19 +41,6 @@ export function jotKind(text: string): JotKind {
   return "point";
 }
 
-export type JotInput = { kind: "jot"; locator: string | null; text: string } | { kind: "progress"; locator: string };
-
-/** Code-only reading of a message: "ch3: ...", "jot: ...", "finished ch3", "on p140". Null if neither. */
-export function parseJotText(text: string): JotInput | null {
-  const t = text.trim();
-  let m: RegExpExecArray | null;
-  if ((m = new RegExp(String.raw`^(${LOCATOR})\s*[:\-–—]\s+(.{3,})$`, "is").exec(t))) return { kind: "jot", locator: normalizeLocator(m[1]), text: m[2].trim() };
-  if ((m = /^(?:jot|takeaway|note to self|thought)\s*[:\-–—]\s*(.{3,})$/is.exec(t))) return { kind: "jot", locator: null, text: m[1].trim() };
-  if ((m = new RegExp(String.raw`^(?:finished|done with|read|completed|through)\s+(${LOCATOR})[.!]?$`, "i").exec(t))) return { kind: "progress", locator: `${normalizeLocator(m[1])} done` };
-  if ((m = new RegExp(String.raw`^(?:on|at|now on|reached|up to)\s+(${LOCATOR})[.!]?$`, "i").exec(t))) return { kind: "progress", locator: normalizeLocator(m[1]) };
-  return null;
-}
-
 /** The book a jot belongs to when none is named: the one you're reading, if there is exactly one. */
 export function soleCurrentBook(db: Db): ShelfItem | null {
   const now = currentReading(db);

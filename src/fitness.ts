@@ -1,7 +1,7 @@
 // The fitness lane, database side. One session per date, built from chunks: every message that logs
 // sets is one log_workout op (ops.ts), so /undo removes exactly that chunk.
 //
-//   "bench 20x15, 22.5x12"  --parseChatWorkout-->  log_workout op  --applyOp-->  session / exercise / sets
+//   model reads "bench 20x15, 22.5x12"  -->  log_workout op  --applyOp-->  session / exercise / sets
 //   life/gym-tracking.md    --importGymLog------>  closed sessions (source 'import'), once
 //
 // Derived, never stored: weekly lifts and mobility, protein average, best sets.
@@ -240,55 +240,6 @@ export function renderLiftHistory(db: Db, name: string, limit = 6): string {
   return `🏋️ <b>${esc(ex.canonical_name)}</b>\n${lines.join("\n")}${bestLine}`;
 }
 
-// ---------------------------------------------------------------- chat input
-
-const kindFrom = (rows: ExerciseRow[]) => (name: string): ExerciseKind => matchExercise(rows, name)?.kind ?? "weighted";
-
-const toInput = (s: SetEntry) => ({
-  weight_kg: s.weight_kg, reps: s.reps, duration_s: s.duration_s, rest_s: s.rest_s, kind: s.kind, bw: s.bw,
-  notes: s.notes, incomplete: s.incomplete,
-});
-
-/**
- * Typed sets without the model: "bench 20x15, 22.5x12" or a name line followed by set lines.
- * A first line "yesterday" logs to yesterday. Returns null unless the whole message reads as sets,
- * and each exercise is either known or has an unmistakable set ("20x15"), so "call mom 2" never matches.
- */
-export function parseChatWorkout(db: Db, text: string, nowMs: number): LogWorkoutOp | null {
-  const today = dayKey(nowMs);
-  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-  let date = today;
-  if (lines.length > 1 && /^yesterday:?$/i.test(lines[0])) {
-    date = addDays(today, -1);
-    lines.shift();
-  }
-  const rows = loadCatalog(db);
-  const { exercises, bad } = parseExerciseLines(lines, kindFrom(rows));
-  if (bad.length > 0 || exercises.length === 0 || exercises.length > 20) return null;
-  for (const e of exercises) {
-    if (e.sets.length === 0 || e.skipped) return null;
-    // A name not in the catalog needs a weight x reps (or BW x reps) set: "remind me in 10 min" is not a hold.
-    if (!matchExercise(rows, e.name) && !e.sets.some((s) => s.reps !== null && (s.weight_kg !== null || s.bw))) return null;
-  }
-  return {
-    type: "log_workout",
-    date,
-    mode: "append",
-    exercises: exercises.map((e) => ({ name: e.name, sets: e.sets.map(toInput) })),
-  };
-}
-
-/** "protein 110", "protein ~95g", "had 120 g protein today". */
-export function parseProtein(text: string): number | null {
-  const t = text.trim();
-  const m =
-    /^(?:protein|prot)\s*[:=~-]?\s*~?\s*(\d{1,3})\s*(?:g|grams?|gm)?(?:\s+today)?[.!]?$/i.exec(t) ??
-    /^(?:had\s+|ate\s+|got\s+)?~?(\d{1,3})\s*(?:g|grams?|gm)\s+(?:of\s+)?protein(?:\s+today)?[.!]?$/i.exec(t);
-  if (!m) return null;
-  const v = Number(m[1]);
-  return v > 0 && v <= 400 ? v : null;
-}
-
 /** The same sets sent again within 15 minutes (a resent voice note, a double tap). Returns when the first one was logged. */
 export function findRepeat(db: Db, op: LogWorkoutOp, nowMs: number): string | null {
   const since = new Date(nowMs - 15 * 60_000).toISOString();
@@ -398,62 +349,6 @@ export function findSessionExercise(db: Db, date: string, name: string): Session
   const ids = new Set(session.exercises.map((e) => e.exerciseId));
   const near = suggestExercise(loadCatalog(db).filter((r) => ids.has(r.id)), name);
   return near ? (session.exercises.find((e) => e.exerciseId === near.id) ?? null) : null;
-}
-
-/** "10" / "10 reps" -> reps; "22.5 kg" -> weight; "22.5x10" -> both. A trailing "not 12" is ignored. */
-function amendValue(text: string): { weight_kg?: number; reps?: number } | null {
-  const v = text.replace(/\s+(?:not|instead of|and not)\s+.*$/i, "").trim();
-  let m = /^(\d+(?:\.\d+)?)\s*(?:kgs?\s*)?[x×]\s*(\d+)$/i.exec(v);
-  if (m) return { weight_kg: Number(m[1]), reps: Number(m[2]) };
-  m = /^(\d+)\s*reps?$/i.exec(v) ?? /^(\d+)$/.exec(v);
-  if (m) return { reps: Number(m[1]) };
-  m = /^(\d+(?:\.\d+)?)\s*kgs?$/i.exec(v);
-  if (m) return { weight_kg: Number(m[1]) };
-  return null;
-}
-
-/**
- * Edits typed in plain words, read by code with no model. Each one only applies when the exercise it names is in
- * the day's session, so ordinary sentences are never mistaken for edits.
- *   "face full should be face pull" · "it was face pull, not face full" · "no, face pull" (the one exercise just logged)
- *   "set 2 of bench was 10 reps" · "bench set 2 was 22.5x10" · "remove calves"
- */
-export function parseExerciseEdit(db: Db, text: string, date: string, lastExercises: string[] = []): Op | null {
-  const t = text.trim().replace(/[.!]+$/, "");
-  if (!t || t.length > 120) return null;
-  const inSession = (name: string) => findSessionExercise(db, date, name) !== null;
-  /** Looks like an exercise name: letters only, a few words. Keeps "bench should be 22.5x10" from being a rename. */
-  const nameLike = (n: string) => /^[a-z][a-z' -]*$/i.test(n.trim()) && n.trim().split(/\s+/).length <= 5;
-
-  let m = /^(.+?)\s+(?:should (?:be|have been)|was meant to be|is actually|was actually|is really)\s+(.+)$/i.exec(t);
-  if (m && nameLike(m[2]) && inSession(m[1])) return { type: "rename_exercise", date, from: m[1].trim(), to: m[2].trim() };
-
-  m = /^(?:no[, ]+)?(?:it was|it's|its|i meant|i said|that was|it should be)\s+(.+?),?\s+(?:not|instead of|and not)\s+(.+)$/i.exec(t);
-  if (m && nameLike(m[1]) && nameLike(m[2]) && inSession(m[2])) return { type: "rename_exercise", date, from: m[2].trim(), to: m[1].trim() };
-
-  m = /^(?:no[, ]+|it was |i meant |i said |actually[, ]+|it should be )(.+)$/i.exec(t);
-  if (m && lastExercises.length === 1 && nameLike(m[1])) {
-    const rows = loadCatalog(db);
-    const hit = matchExercise(rows, m[1]) ?? suggestExercise(rows, m[1]);
-    if (hit && hit.canonical_name !== lastExercises[0] && inSession(lastExercises[0])) {
-      return { type: "rename_exercise", date, from: lastExercises[0], to: hit.canonical_name };
-    }
-  }
-
-  const amend =
-    /^(?:set|s)\s*(\d+)\s+(?:of|for|on)\s+(.+?)\s+(?:was|is|should be|were)\s+(.+)$/i.exec(t) ??
-    /^(\d+)(?:st|nd|rd|th)\s+set\s+(?:of|for|on)\s+(.+?)\s+(?:was|is|should be)\s+(.+)$/i.exec(t);
-  const amendAlt = amend ? null : /^(.+?)\s+set\s+(\d+)\s+(?:was|is|should be)\s+(.+)$/i.exec(t);
-  const parts = amend ? { setNo: amend[1], name: amend[2], value: amend[3] } : amendAlt ? { setNo: amendAlt[2], name: amendAlt[1], value: amendAlt[3] } : null;
-  if (parts) {
-    const v = amendValue(parts.value);
-    if (v && inSession(parts.name)) return { type: "amend_set", date, exercise: parts.name.trim(), set_no: Number(parts.setNo), ...v };
-  }
-
-  m = /^(?:remove|delete|scratch|take out)\s+(.+?)(?:\s+from\s+(?:today|today's workout|the workout|my workout|the log))?$/i.exec(t);
-  if (m && nameLike(m[1]) && inSession(m[1])) return { type: "remove_exercise", date, exercise: m[1].trim() };
-
-  return null;
 }
 
 /** Names in a log that match nothing in the catalog but look like a misspelling of an entry: "face full" -> Face Pull. */

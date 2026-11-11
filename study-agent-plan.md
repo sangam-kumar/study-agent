@@ -264,7 +264,24 @@ flowchart TD
   - [x] 16.3 Near-matches for exercise names: ask before creating ("face full" -> Face Pull?), learn the spelling as an alias.
   - [x] 16.4 Edits after the fact: `rename_exercise`, `amend_set`, `remove_exercise`; plain-word patterns; `workout_edit` intent for the model.
   - [x] 16.5 `/help`, docs.
-* **Check:** after deploy, the five scenarios in the phase doc §10; then `npm run live-check` for the `workout_edit` phrasings (not yet run).
+* **Check:** after deploy, the five scenarios in the phase doc §10. `live-check` for the `workout_edit` phrasings: 4/4 pass (2026-11-09).
+
+### Phase 16b: Model-first understanding with conversation context
+* **Phase Doc:** `docs/phase-16b-model-first.md`
+* **Why:** hand-written patterns (protein, typed sets, edits, "ok", "gn", office days, answers to questions) are replaced by the model, which is given the message being replied to and the recent conversation. Code decides effects from tags on the bot's own messages.
+* **Sub-steps:**
+  - [x] 16b.1 Baseline `live-check` cases for every phrase the shortcuts catch (gate for deleting each one).
+  - [x] 16b.2 Delete duplicate shortcuts: protein, jot/progress, typed sets, exercise edits.
+  - [x] 16b.3 Prompt rules and examples for short and ambiguous messages.
+  - [ ] 16b.4 `chat_log` (inbound and outbound, `reply_to_message`), one wrapped Telegram client.
+  - [ ] 16b.5 Tag the bot's messages (evening recap, plan, nudge, reminder, question).
+  - [ ] 16b.6 `buildConversation` in classify and every lane; `live-check` with context.
+  - [ ] 16b.7 `answer` intent replaces word lists and the "ok" regex.
+  - [ ] 16b.8 `status` and `place` intents replace `BED_RE` / `OFFICE_RE`; wake check moves after understanding.
+  - [ ] 16b.9 Confidence guards and the offline fallback.
+  - [ ] 16b.10 Experiment: one model call instead of two (flagged, measured).
+  - [ ] 16b.11 `/help`, docs.
+* **Check:** the phrase list in the phase doc §7, then read `chat_log` from the export.
 
 ### Phase 17: Feedback intent and protein as additions [B4, B5, P-1, P-2]
 * **Phase Doc:** to be written at the start of the phase.
@@ -283,7 +300,7 @@ flowchart TD
 
 ### Order of execution
 P7 → P8 → P9 → P10 (**start living on it here**) → P12 → P11 → P13 → P14, then 14 days untouched. P12 is pulled forward because it closes the commit gap as a side effect.
-Then P15 → P16 → P17 → P18 → P19 → dashboard. P15 comes first because it shows the data P16 needs to fix.
+Then P15 → P16 → P16b → P17 → P18 → P19 → dashboard. P15 comes first because it shows the data P16 needs to fix.
 
 ### Definition of done (every phase)
 Typecheck and tests green, docs updated, and **`/help` lists every new command or behaviour** the phase adds.

@@ -132,6 +132,7 @@ const cases: Case[] = [
   { group: "workout_edit", text: "the last bench set was only 8 reps", expect: "amend_set bench set 3 reps 8", check: isOp("amend_set", { set_no: 3, reps: 8 }) },
   { group: "snooze", text: "pause your messages for 3 hours, I'm in a meeting", expect: "snooze 3h", check: (o) => o.kind === "snooze" && o.hours === 3 },
   { group: "chat", text: "hey how's it going", expect: "a reply, nothing changed", check: (o) => o.kind === "reply" },
+  { group: "chat", text: "Today's workout\nLegs/Shoulders", expect: "a reply asking for the sets, not the inbox", check: (o) => o.kind === "reply" && /set/i.test(o.html) },
   { group: "vague", text: "the thing from earlier", expect: "inbox or a question", check: (o) => o.kind === "inbox" || o.kind === "reply", workers: true },
 ];
 

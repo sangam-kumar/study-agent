@@ -23,7 +23,7 @@ export const CLASSIFY_CARD = `Classify the message into exactly one intent:
 - workout: exercises with sets/reps/weights to log, including a corrected list of sets for exercises already logged today.
 - workout_edit: fix one thing already logged: rename an exercise, change one set, or remove an exercise ("face full should be face pull", "set 2 of bench was 10 reps", "remove calves", "that wasn't squats, it was leg press").
 - snooze: pause the agent's messages for a while.
-- chat: anything else, including questions and small talk.
+- chat: anything else, including questions and small talk, and saying what you are about to train with no sets yet ("today's workout: legs/shoulders"). Be confident about that last kind: it is chat, not unclear.
 Give a confidence from 0 to 1.`;
 
 export const LANE_CARDS: Record<Intent, string> = {
@@ -75,5 +75,5 @@ date: only when a past day was named ("yesterday"); otherwise leave empty. Never
 
   snooze: `Snooze. duration_hours (default 2) and a short reason.`,
 
-  chat: `Reply in one or two short sentences. Do not claim to have changed anything.`,
+  chat: `Reply in one or two short sentences. Do not claim to have changed anything. If they only say what they are about to train, acknowledge it and say to send the sets when done, one exercise per line, e.g. squat 60x10, 60x10.`,
 };

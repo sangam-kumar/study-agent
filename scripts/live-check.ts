@@ -63,13 +63,23 @@ const bookId = (like: string) => db.all<{ id: number }>("SELECT id FROM reading_
 // ------------------------------------------------------------------ cases
 
 type Check = (o: Outcome) => boolean;
-interface Case { group: string; text: string; expect: string; check: Check; workers?: boolean }
+interface Case { group: string; text: string; expect: string; check: Check; workers?: boolean; conversation?: string }
 
 const ops = (o: Outcome) => (o.kind === "ops" ? o.ops : []);
 const op1 = (o: Outcome) => ops(o)[0] ?? {};
 const isOp = (type: string, extra: Record<string, unknown> = {}): Check => (o) =>
   op1(o).type === type && Object.entries(extra).every(([k, v]) => (typeof v === "function" ? (v as (x: unknown) => boolean)(op1(o)[k]) : op1(o)[k] === v));
 const has = (s: string) => (x: unknown) => typeof x === "string" && x.toLowerCase().includes(s);
+
+
+// Conversation contexts for the answer cases (what buildConversation() would hand the model).
+const RECAP = 'Conversation:\nReplying to [bot evening_recap]: "Tomorrow (Tue 3 Nov): Gym Legs, DSA x2, Reading DDIA. Reply ok to lock."\nRecent:\n  [bot 21:00 evening_recap] Tomorrow (Tue 3 Nov): Gym Legs, DSA x2, Reading DDIA. Reply ok to lock.';
+const RECAP_PLAIN = 'Conversation:\nRecent:\n  [bot 21:00 evening_recap] Tomorrow (Tue 3 Nov): Gym Legs, DSA x2, Reading DDIA. Reply ok to lock.';
+const WHICH = 'Conversation:\nRecent:\n  [you 10:01] done with reading\n  [bot 10:01 question] Which one on Mon 2 Nov? 1. Reading: DDIA  2. Reading: Sapiens\nOpen question (which plan item to done): 1. Reading: DDIA  2. Reading: Sapiens';
+const CONFIRM = 'Conversation:\nRecent:\n  [you 11:20] face full 15x12, 15x12\n  [bot 11:20 question] Is this the exercise you meant? "face full" -> Face Pull. Reply yes, new, or say the name.\nOpen question (is this the exercise?): "face full" = "Face Pull"?';
+const REMIND = 'Conversation:\nReplying to [bot reminder:4]: "call the bank about the card"\nRecent:\n  [bot 16:00 reminder:4] call the bank about the card';
+const isAnswer = (kind: string, ids?: number[], name?: string): Check => (o) =>
+  o.kind === "answer" && o.answer.kind === kind && (!ids || JSON.stringify(o.answer.ids) === JSON.stringify(ids)) && (!name || o.answer.name.toLowerCase().includes(name));
 
 const cases: Case[] = [
   // reading
@@ -138,6 +148,21 @@ const cases: Case[] = [
   { group: "baseline", text: "on p140", expect: "set_progress on DDIA p140", check: isOp("set_progress", { reading_id: ddia, locator: has("140") }) },
   { group: "baseline", text: "bench 20x15, 22.5x12", expect: "one exercise, 20x15 and 22.5x12", check: (o) => o.kind === "workout" && o.op.exercises.length === 1 && JSON.stringify(o.op.exercises[0].sets.map((s) => [s.weight_kg, s.reps])) === "[[20,15],[22.5,12]]" },
   { group: "baseline", text: "lat pulldown 25x15, row 30x12 and 30x10", expect: "two exercises", check: (o) => o.kind === "workout" && o.op.exercises.length === 2 },
+  // answers (16b.7): short replies read against the conversation
+  { group: "answer", text: "ok", conversation: RECAP, expect: "affirm (swipe-reply to the recap)", check: isAnswer("affirm") },
+  { group: "answer", text: "lock it", conversation: RECAP_PLAIN, expect: "affirm (plain reply after the recap)", check: isAnswer("affirm") },
+  { group: "answer", text: "looks good", conversation: RECAP_PLAIN, expect: "affirm", check: isAnswer("affirm") },
+  { group: "answer", text: "no wait, leave it for now", conversation: RECAP_PLAIN, expect: "deny", check: isAnswer("deny") },
+  { group: "answer", text: "both", conversation: WHICH, expect: "choose 1 and 2", check: isAnswer("choose", [1, 2]) },
+  { group: "answer", text: "the second one", conversation: WHICH, expect: "choose 2", check: isAnswer("choose", [2]) },
+  { group: "answer", text: "the sapiens one", conversation: WHICH, expect: "choose 2", check: isAnswer("choose", [2]) },
+  { group: "answer", text: "neither", conversation: WHICH, expect: "deny", check: isAnswer("deny") },
+  { group: "answer", text: "yeah that's right", conversation: CONFIRM, expect: "affirm", check: isAnswer("affirm") },
+  { group: "answer", text: "no it's a new one", conversation: CONFIRM, expect: "new", check: isAnswer("new") },
+  { group: "answer", text: "rear delt fly", conversation: CONFIRM, expect: "name rear delt fly", check: isAnswer("name", undefined, "rear delt") },
+  { group: "answer", text: "done", conversation: REMIND, expect: "affirm (a reminder reply)", check: isAnswer("affirm") },
+  { group: "answer-not", text: "move gym to Saturday", conversation: RECAP_PLAIN, expect: "a plan edit, not an answer", check: (o) => o.kind === "ops" && op1(o).type === "move_item" },
+  { group: "answer-not", text: "protein 90", conversation: RECAP_PLAIN, expect: "a protein entry, not an answer", check: (o) => o.kind === "ops" && op1(o).type === "log_metric" },
   { group: "snooze", text: "pause your messages for 3 hours, I'm in a meeting", expect: "snooze 3h", check: (o) => o.kind === "snooze" && o.hours === 3 },
   { group: "chat", text: "hey how's it going", expect: "a reply, nothing changed", check: (o) => o.kind === "reply" },
   { group: "chat", text: "Today's workout\nLegs/Shoulders", expect: "a reply asking for the sets, not the inbox", check: (o) => o.kind === "reply" && /set/i.test(o.html) },
@@ -188,7 +213,7 @@ if (useWorkers) {
 // ------------------------------------------------------------------ run
 
 const groups = only ? only.split(",") : null;
-const selected = cases.filter((c) => (!useWorkers || c.workers) && (!groups || groups.includes(c.group)));
+const selected = cases.filter((c) => (!useWorkers || c.workers) && (!groups || groups.includes(c.group)) && (!process.env.ONLY_TEXT || process.env.ONLY_TEXT.split("|").includes(c.text)));
 console.log(`Live check: ${backend.name}, ${selected.length} phrases, now = Mon 2 Nov 10:00 IST\n`);
 
 let pass = 0;
@@ -198,7 +223,7 @@ for (const c of selected) {
   const started = Date.now();
   let out: Outcome;
   try {
-    out = await understand({ db, backends: [backend], nowMs, log: (l) => { warnings.push(l); if (process.env.DBG) console.log("LOG", l.slice(0, 600)); } }, c.text);
+    out = await understand({ db, backends: [backend], nowMs, conversation: c.conversation, log: (l) => { warnings.push(l); if (process.env.DBG) console.log("LOG", l.slice(0, 600)); } }, c.text);
   } catch (e) {
     out = { kind: "reply", html: `CRASH: ${(e as Error).message}` };
   }

@@ -93,56 +93,28 @@ export function choiceOps(p: Extract<Pending, { kind: "choose_item" }>, ids: num
 
 // ------------------------------------------------------------------ answers
 
-const norm = (t: string) =>
-  t.toLowerCase().replace(/[’']/g, "").replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
-
-const CANCEL = new Set(["neither", "none", "cancel", "never mind", "nevermind", "forget it", "no", "nope", "no thanks", "skip it", "leave it", "none of them"]);
-const ALL = new Set(["both", "all", "all of them", "both of them", "everything", "do both", "both please", "all please", "the both", "both of those", "all of those"]);
-const ORDINALS: Record<string, number> = {
-  "1": 1, "1st": 1, first: 1, one: 1,
-  "2": 2, "2nd": 2, second: 2, two: 2,
-  "3": 3, "3rd": 3, third: 3, three: 3,
-  "4": 4, "4th": 4, fourth: 4, four: 4,
-};
-const FILLER = new Set(["the", "a", "an", "one", "number", "no", "option", "item", "please", "just", "only", "that", "this", "it", "do", "mark", "for"]);
-
-/** The reply to "Which one?": the chosen option ids, "cancel", or null when the text does not answer it. */
-export function answerChoice(text: string, options: ChooseOption[]): { ids: number[] } | "cancel" | null {
-  const t = norm(text);
-  if (!t || t.split(" ").length > 8) return null;
-  if (CANCEL.has(t)) return "cancel";
-  if (ALL.has(t) && options.length >= 2) return { ids: options.map((o) => o.id) };
-
-  // "2", "second", "the first one", "option 1", "the last one"; a bare "one" / "two" counts too.
-  const core = t.split(" ").filter((w) => !FILLER.has(w));
-  const pick = core.length === 1 ? core[0] : t in ORDINALS ? t : undefined;
-  if (pick === "last") return { ids: [options[options.length - 1].id] };
-  if (pick !== undefined && pick in ORDINALS) {
-    const o = options[ORDINALS[pick] - 1];
-    return o ? { ids: [o.id] } : null;
-  }
-
-  // A distinctive word from one title: "scalability", "high scalability".
-  const typed = t.split(" ").filter((w) => w.length >= 3 && !FILLER.has(w));
-  if (typed.length === 0) return null;
-  const hits = options.filter((o) => {
-    const title = norm(o.title);
-    return typed.every((w) => title.includes(w));
-  });
-  return hits.length === 1 ? { ids: [hits[0].id] } : null;
+/** What the model heard in a reply: its meaning only. Code decides what that means for the open question. */
+export interface Answer {
+  kind: "affirm" | "deny" | "choose" | "name" | "new";
+  /** choose: the numbers of the options picked, as listed (1 = the first). "Both" is every option. */
+  ids: number[];
+  /** name: the name offered ("face pull"). */
+  name: string;
 }
 
-const YES = new Set(["yes", "y", "yep", "yeah", "ya", "yup", "yes please", "correct", "right", "thats right", "thats it", "that one", "that is right", "ok", "okay", "sure", "yes that one", "yes thats it"]);
-const NEW = new Set(["new", "its new", "it is new", "new one", "add new", "as said", "keep it", "keep it as is", "no its new", "no new", "no keep it", "create it", "a new one"]);
+/** The reply to "Which one?": the chosen option ids, "cancel", or null when it does not pick any. */
+export function choiceFrom(a: Answer, options: ChooseOption[]): { ids: number[] } | "cancel" | null {
+  if (a.kind === "deny") return "cancel";
+  if (a.kind !== "choose") return null;
+  const picked = [...new Set(a.ids)].map((n) => options[n - 1]).filter((o): o is ChooseOption => !!o);
+  return picked.length > 0 && picked.length === new Set(a.ids).size ? { ids: picked.map((o) => o.id) } : null;
+}
 
-/** The reply to "Is X really Y?": yes, new, cancel, a different name to check, or null. */
-export function answerConfirm(text: string): "yes" | "new" | "cancel" | { name: string } | null {
-  const t = norm(text);
-  if (!t) return null;
-  if (YES.has(t)) return "yes";
-  if (NEW.has(t)) return "new";
-  if (CANCEL.has(t)) return "cancel";
-  if (t.split(" ").length > 6 || text.trim().endsWith("?")) return null;
-  const name = t.replace(/^(?:no |not that |its |it is |i meant |the |say |use )+/, "").trim();
-  return name.length >= 3 ? { name } : null;
+/** The reply to "Is X really Y?": yes, new, cancel, another name to check, or null. */
+export function confirmFrom(a: Answer): "yes" | "new" | "cancel" | { name: string } | null {
+  if (a.kind === "affirm") return "yes";
+  if (a.kind === "new") return "new";
+  if (a.kind === "deny") return "cancel";
+  if (a.kind === "name") return a.name.trim().length >= 3 ? { name: a.name.trim() } : null;
+  return null;
 }

@@ -1,4 +1,4 @@
-import { logIn, logOut, noteOutcome } from "./chatlog.ts";
+import { byTgId, lastOut, logIn, logOut, noteOutcome } from "./chatlog.ts";
 import { buildConversation } from "./conversation.ts";
 import { Agent } from "agents";
 import { TelegramClient } from "./telegram/bot";
@@ -18,8 +18,8 @@ import type { ApplyOptions, ApplyResult, UndoResult } from "./ops.ts";
 import { SerialQueue } from "./queue.ts";
 import { SeedError, loadStudySeed, queryPlan } from "./seed.ts";
 import { ResetError, parseScopes, resetData as resetRows } from "./reset.ts";
-import { answerChoice, answerConfirm, choiceOps, clearPending, getLast, getPending, setLast, setPending } from "./convo.ts";
-import type { Pending } from "./convo.ts";
+import { choiceFrom, choiceOps, confirmFrom, clearPending, getLast, getPending, setLast, setPending } from "./convo.ts";
+import type { Answer, Pending } from "./convo.ts";
 import { ViewError, readView as readViewRows } from "./views.ts";
 import type { ViewResult } from "./views.ts";
 import { loadConfigSeed } from "./seed-config.ts";
@@ -60,6 +60,9 @@ export interface Turn {
   logId: number | null;
   replyTo: { tgId: number; text: string } | null;
 }
+
+/** A reply that changes something (lock the plan, mark done, pick an item) needs the classifier at least this sure. */
+const ANSWER_CONFIDENCE = 0.8;
 
 const escapeHtml = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
@@ -408,24 +411,6 @@ Total queued articles: <b>${count}</b>`
     const today = dayKey(nowMs);
     const tomorrow = addDays(today, 1);
 
-    // An open question ("Which one?") comes first: a reply that answers it is handled here, no model.
-    const open = getPending(db, nowMs);
-    if (open) {
-      const answered = this.answerPending(open, text, nowMs);
-      if (answered !== null) {
-        await telegram.sendMessage(chatId, answered);
-        return;
-      }
-    }
-
-    // "ok" after the evening message locks tomorrow. No model needed.
-    if (/^(ok|okay|ok lock|lock|lock it|looks good|sounds good|good|fine|yes|yep|👍)[.!]?$/i.test(text.trim()) && eventExists(db, "evening_recap", today) && loadDayRow(db, tomorrow)?.status === "draft") {
-      lockDay(db, tomorrow, "user", nowMs);
-      await telegram.sendMessage(chatId, `🔒 Locked ${dateLabel(tomorrow)}. See you in the morning.`);
-      await this.mirror();
-      return;
-    }
-
     // "sleeping" / "good night": a bedtime. No model needed.
     if (BED_RE.test(text.trim())) {
       recordEvent(db, "bed", today, {}, nowMs);
@@ -459,6 +444,9 @@ Total queued articles: <b>${count}</b>`
         await telegram.sendMessage(chatId, `${body}${session}${heard}`);
         return;
       }
+      case "answer":
+        await telegram.sendMessage(chatId, `${await this.applyAnswer(outcome.answer, outcome.confidence, turn, text, nowMs)}${heard}`);
+        return;
       case "choose":
         setPending(db, nowMs, outcome.pending);
         await telegram.sendMessage(chatId, `${outcome.html}${heard}`, "HTML", undefined, "question");
@@ -515,29 +503,66 @@ Total queued articles: <b>${count}</b>`
   }
 
   /** The reply when a message answers the open question; null when it does not (the message then carries on as normal). */
-  private answerPending(p: Pending, text: string, nowMs: number): string | null {
+  /**
+   * A reply to the bot. The model has only said what the reply means (yes, no, which options, a name); what it
+   * does is decided here from the message it answers: an open question, the evening recap, a reminder.
+   */
+  private async applyAnswer(a: Answer, confidence: number, turn: Turn, text: string, nowMs: number): Promise<string> {
+    const db = doDb(this.ctx);
+    const open = getPending(db, nowMs);
+    const replied = turn.replyTo ? byTgId(db, turn.replyTo.tgId) : null;
+    const latest = replied ?? (open ? null : lastOut(db, nowMs, 6 * 3_600_000));
+    const tag = replied?.tag === "question" || (!replied && open) ? "question" : (latest?.tag ?? null);
+    const sure = confidence >= ANSWER_CONFIDENCE;
+
+    if (tag === "question") {
+      if (!open) return "That question has timed out. Say it again and I will ask again.";
+      if (!sure) return "🤔 Not sure which answer you mean. Reply with a number, <b>both</b>, <b>yes</b> or <b>no</b>.";
+      return this.answerPending(open, a, text) ?? "🤔 I did not catch that. Reply with a number, <b>both</b>, <b>yes</b>, <b>no</b>, or the name.";
+    }
+    if (tag === "evening_recap") {
+      const tomorrow = addDays(dayKey(nowMs), 1);
+      if (a.kind === "deny") return "👌 Left as a draft. Change anything, or send /lock when you are ready.";
+      if (a.kind !== "affirm") return "👌";
+      if (!sure) return "🤔 Lock tomorrow's plan? Send /lock to be sure.";
+      if (loadDayRow(db, tomorrow)?.status !== "draft") return `${dateLabel(tomorrow)} is already locked.`;
+      lockDay(db, tomorrow, "user", nowMs);
+      await this.mirror();
+      return `🔒 Locked ${dateLabel(tomorrow)}. See you in the morning.`;
+    }
+    const reminder = /^reminder:(\d+)$/.exec(tag ?? "");
+    if (reminder) {
+      if (a.kind === "deny") return "👌 Still on. I will remind you again.";
+      if (a.kind !== "affirm") return "👌";
+      if (!sure) return "🤔 Mark that reminder done? Tap Done on it to be sure.";
+      return this.closeReminder(Number(reminder[1]), "done");
+    }
+    return a.kind === "affirm" ? "👍" : "👌";
+  }
+
+  private answerPending(p: Pending, a: Answer, text: string): string | null {
     const db = doDb(this.ctx);
     if (p.kind === "choose_item") {
-      const a = answerChoice(text, p.options);
-      if (a === null) return null;
+      const r = choiceFrom(a, p.options);
+      if (r === null) return null;
       clearPending(db);
-      if (a === "cancel") return "👌 Left as it was.";
-      return this.runOps(choiceOps(p, a.ids), text);
+      if (r === "cancel") return "👌 Left as it was.";
+      return this.runOps(choiceOps(p, r.ids), text);
     }
     if (p.kind === "confirm_exercise") {
-      const a = answerConfirm(text);
-      if (a === null) return null;
-      if (a === "cancel") {
+      const r = confirmFrom(a);
+      if (r === null) return null;
+      if (r === "cancel") {
         clearPending(db);
         return "👌 Not logged. Send it again with the right name.";
       }
       let op = p.op;
-      if (a === "yes") {
+      if (r === "yes") {
         op = renameInOp(p.op, Object.fromEntries(p.asked.map((x) => [x.typed, x.suggestion])));
-      } else if (a !== "new") {
+      } else if (r !== "new") {
         // Another name: it must be an exercise we know, and only makes sense when one name was asked about.
         const rows = loadCatalog(db);
-        const hit = p.asked.length === 1 ? (matchExercise(rows, a.name) ?? suggestExercise(rows, a.name)) : null;
+        const hit = p.asked.length === 1 ? (matchExercise(rows, r.name) ?? suggestExercise(rows, r.name)) : null;
         if (!hit) return null;
         op = renameInOp(p.op, { [p.asked[0].typed]: hit.canonical_name });
       }
@@ -545,11 +570,14 @@ Total queued articles: <b>${count}</b>`
       return this.logWorkout(op, text, { checked: true });
     }
     if (p.kind === "repeat_workout") {
-      if (!/^(?:add (?:it |them )?again|log (?:it |them )?anyway|again)[.!]?$/i.test(text.trim())) return null;
+      if (a.kind === "deny") {
+        clearPending(db);
+        return "👌 Not logged again.";
+      }
+      if (a.kind !== "affirm") return null;
       clearPending(db);
       return this.logWorkout(p.op, text, { force: true, checked: true });
     }
-    void nowMs;
     return null;
   }
 

@@ -20,7 +20,7 @@ import { addDays, dayKey, istWallToMs } from "./time.ts";
 import { findExercise } from "./exercises.ts";
 import { parseSets } from "./sets.ts";
 import type { LogWorkoutOp } from "./fitness.ts";
-import type { Pending } from "./convo.ts";
+import type { Answer, Pending } from "./convo.ts";
 
 export const MIN_CONFIDENCE = 0.6;
 
@@ -34,6 +34,8 @@ export type Outcome =
   | { kind: "reminder_action"; action: "cancel" | "done"; id: number }
   /** protein: grams, when the same message mentioned it. */
   | { kind: "workout"; op: LogWorkoutOp; protein?: number }
+  /** A reply to something the bot said. Code decides what it answers (the message tag, or the open question). */
+  | { kind: "answer"; answer: Answer; confidence: number }
   | { kind: "snooze"; hours: number; reason: string }
   | { kind: "reply"; html: string }
   /** A question whose answer is a short reply; the agent stores the pending question (convo.ts). */
@@ -204,6 +206,14 @@ const EXTRACT_SCHEMAS: Record<Intent, JsonSchema> = {
       date: { type: "string", description: "YYYY-MM-DD only if a past day was named, else empty" },
     },
     ["metric", "value"],
+  ),
+  answer: S(
+    {
+      kind: { type: "string", enum: ["affirm", "deny", "choose", "new", "name"] },
+      ids: { type: "array", items: { type: "number" }, description: "choose: the option numbers picked (1 = first)" },
+      name: { type: "string", description: "name: the name offered" },
+    },
+    ["kind", "ids", "name"],
   ),
   snooze: S({ duration_hours: { type: "number" }, reason: { type: "string" } }, ["reason"]),
   chat: S({ reply: { type: "string" } }, ["reply"]),
@@ -381,6 +391,15 @@ const LANE_HANDLERS: Record<Intent, (db: Db, nowMs: number) => { validate: (raw:
     }),
   }),
 
+  answer: () => ({
+    validate: (raw): Answer => {
+      const o = asObj(raw);
+      const ids = Array.isArray(o.ids) ? o.ids.filter((n): n is number => typeof n === "number" && Number.isInteger(n) && n >= 1 && n <= 20) : [];
+      return { kind: oneOf(o, "kind", ["affirm", "deny", "choose", "new", "name"] as const), ids, name: optStr(o, "name", 100) ?? "" };
+    },
+    map: (v: Answer): Outcome => ({ kind: "answer", answer: v, confidence: 1 }),
+  }),
+
   note: () => ({
     validate: (raw) => {
       const o = asObj(raw);
@@ -507,7 +526,8 @@ export async function understand(deps: UnderstandDeps, text: string): Promise<Ou
       },
       log,
     );
-    return handler.map(extracted);
+    const mapped = handler.map(extracted);
+    return mapped.kind === "answer" ? { ...mapped, confidence: cls.confidence } : mapped;
   } catch (e) {
     if (e instanceof InferError) {
       log(`understand: ${e.message}`);

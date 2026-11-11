@@ -298,3 +298,15 @@ test("metric: protein becomes a log_metric op, a past day is allowed, nonsense i
   const bad = await run(db, model("metric", 0.9, { metric: "protein_g", value: 5000 }), "protein 5000");
   assert.equal(bad.kind, "inbox");
 });
+
+test("answer: the meaning is mapped, ids outside 1-20 are dropped, and the classifier's confidence travels with it", async () => {
+  const db = world();
+  const both = await run(db, model("answer", 0.93, { kind: "choose", ids: [1, 2, 99, "x"], name: "" }), "both");
+  assert.deepEqual(both, { kind: "answer", answer: { kind: "choose", ids: [1, 2], name: "" }, confidence: 0.93 });
+  const ok = await run(db, model("answer", 0.85, { kind: "affirm", ids: [], name: "" }), "lock it");
+  assert.deepEqual(ok, { kind: "answer", answer: { kind: "affirm", ids: [], name: "" }, confidence: 0.85 });
+  const named = await run(db, model("answer", 0.9, { kind: "name", ids: [], name: "face pull" }), "face pull");
+  assert.deepEqual(named, { kind: "answer", answer: { kind: "name", ids: [], name: "face pull" }, confidence: 0.9 });
+  const junk = await run(db, model("answer", 0.9, { kind: "maybe", ids: [], name: "" }), "hmm");
+  assert.equal(junk.kind, "inbox");
+});

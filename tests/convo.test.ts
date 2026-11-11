@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  LAST_MS, PENDING_MS, answerChoice, answerConfirm, choiceOps, clearPending, getLast, getPending, setLast, setPending,
+  LAST_MS, PENDING_MS, choiceFrom, choiceOps, clearPending, confirmFrom, getLast, getPending, setLast, setPending,
 } from "../src/convo.ts";
-import type { Pending } from "../src/convo.ts";
+import type { Answer, Pending } from "../src/convo.ts";
 import { applyOp } from "../src/ops.ts";
 import { loadStudySeed } from "../src/seed.ts";
 import { understand } from "../src/understand.ts";
@@ -57,26 +57,21 @@ test("a corrupt stored value is treated as no state", () => {
 
 // ------------------------------------------------------------ answering a choice
 
-test("choice: both / all / numbers / ordinals / words from a title", () => {
-  const ids = (t: string) => {
-    const a = answerChoice(t, options);
-    return a === null || a === "cancel" ? a : a.ids;
-  };
-  for (const t of ["Both", "both of them", "all", "All of them.", "do both", "both please"]) assert.deepEqual(ids(t), [11, 12], t);
-  for (const t of ["1", "first", "the first one", "1st", "option 1", "one", "number 1"]) assert.deepEqual(ids(t), [11], t);
-  for (const t of ["2", "second", "the second one", "2nd", "two"]) assert.deepEqual(ids(t), [12], t);
-  assert.deepEqual(ids("last"), [12]);
-  assert.deepEqual(ids("the last one"), [12]);
-  assert.deepEqual(ids("basics"), [11]);
-  assert.deepEqual(ids("the high scalability one"), [12]);
+const ans = (kind: Answer["kind"], ids: number[] = [], name = ""): Answer => ({ kind, ids, name });
+
+test("choice: the model's numbers become the option ids", () => {
+  assert.deepEqual(choiceFrom(ans("choose", [1, 2]), options), { ids: [11, 12] }, "both");
+  assert.deepEqual(choiceFrom(ans("choose", [2]), options), { ids: [12] });
+  assert.deepEqual(choiceFrom(ans("choose", [1, 1]), options), { ids: [11] }, "a repeated number counts once");
 });
 
-test("choice: neither cancels, and anything else is not an answer", () => {
-  for (const t of ["neither", "none", "Cancel", "never mind", "nope"]) assert.equal(answerChoice(t, options), "cancel", t);
-  for (const t of ["scalability", "what's my protein today", "3", "skip", "I did the gym and then went for a long walk with a friend", "", "   "]) {
-    assert.equal(answerChoice(t, options), null, t);
-  }
-  assert.equal(answerChoice("both", [options[0]]), null, "'both' needs two options");
+test("choice: deny cancels; a number that is not an option, or no pick, is not an answer", () => {
+  assert.equal(choiceFrom(ans("deny"), options), "cancel");
+  assert.equal(choiceFrom(ans("choose", [3]), options), null, "there is no third option");
+  assert.equal(choiceFrom(ans("choose", [1, 3]), options), null, "a partly wrong pick is not guessed at");
+  assert.equal(choiceFrom(ans("choose", []), options), null);
+  assert.equal(choiceFrom(ans("affirm"), options), null, "'yes' does not say which");
+  assert.equal(choiceFrom(ans("name", [], "basics"), options), null);
 });
 
 test("choiceOps: the same action for every chosen item", () => {
@@ -92,15 +87,13 @@ test("choiceOps: the same action for every chosen item", () => {
 
 // --------------------------------------------------------- answering a confirmation
 
-test("confirm: yes, new, cancel, or another name", () => {
-  for (const t of ["yes", "Yep", "ya", "y", "correct", "that one", "Yes!", "ok"]) assert.equal(answerConfirm(t), "yes", t);
-  for (const t of ["new", "it's new", "its new", "no, it's new", "keep it"]) assert.equal(answerConfirm(t), "new", t);
-  for (const t of ["no", "cancel", "never mind", "nope"]) assert.equal(answerConfirm(t), "cancel", t);
-  assert.deepEqual(answerConfirm("no, rear delt fly"), { name: "rear delt fly" });
-  assert.deepEqual(answerConfirm("lat pulldown"), { name: "lat pulldown" });
-  assert.equal(answerConfirm("what is my protein for the day so far, and how many reps?"), null);
-  assert.equal(answerConfirm("is it?"), null);
-  assert.equal(answerConfirm(""), null);
+test("confirm: affirm is yes, new is new, deny cancels, a name is checked", () => {
+  assert.equal(confirmFrom(ans("affirm")), "yes");
+  assert.equal(confirmFrom(ans("new")), "new");
+  assert.equal(confirmFrom(ans("deny")), "cancel");
+  assert.deepEqual(confirmFrom(ans("name", [], " rear delt fly ")), { name: "rear delt fly" });
+  assert.equal(confirmFrom(ans("name", [], "ab")), null, "too short to be a name");
+  assert.equal(confirmFrom(ans("choose", [1])), null);
 });
 
 // ------------------------------------------------- the real flow: the "Both" bug
@@ -134,7 +127,7 @@ test("'which one?' then 'Both' marks both items done", async () => {
 
   const open = getPending(db, nowMs + 20_000)!;
   assert.equal(open.kind, "choose_item");
-  const a = answerChoice("Both", (open as Extract<Pending, { kind: "choose_item" }>).options);
+  const a = choiceFrom(ans("choose", [1, 2]), (open as Extract<Pending, { kind: "choose_item" }>).options);
   assert.ok(a !== null && a !== "cancel");
   if (open.kind !== "choose_item") return;
   for (const op of choiceOps(open, a.ids)) applyOp(db, op, { now });

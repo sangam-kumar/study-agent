@@ -9,8 +9,8 @@ If the message is unclear, lower your confidence instead of guessing.
 A short reply (ok, yes, both, the second one, done, no) answers the "Replying to" message if there is one, otherwise the latest bot message under "Recent", otherwise the open question. Use that context; do not treat such a reply as unclear.
 Be brief.`;
 
-export type Intent = "plan" | "override" | "reading" | "jot" | "progress" | "study_done" | "reminder" | "note" | "workout" | "workout_edit" | "metric" | "snooze" | "chat";
-export const INTENTS: readonly Intent[] = ["plan", "override", "reading", "jot", "progress", "study_done", "reminder", "note", "workout", "workout_edit", "metric", "snooze", "chat"];
+export type Intent = "plan" | "override" | "reading" | "jot" | "progress" | "study_done" | "reminder" | "note" | "workout" | "workout_edit" | "metric" | "answer" | "snooze" | "chat";
+export const INTENTS: readonly Intent[] = ["plan", "override", "reading", "jot", "progress", "study_done", "reminder", "note", "workout", "workout_edit", "metric", "answer", "snooze", "chat"];
 
 export const CLASSIFY_CARD = `Classify the message into exactly one intent:
 - plan: mark an item of today's or tomorrow's plan done or skipped, add a task to a day, or move an item to another day ("done with gym", "skip reading today", "add call mom tomorrow", "move DSA to Saturday").
@@ -24,6 +24,7 @@ export const CLASSIFY_CARD = `Classify the message into exactly one intent:
 - workout: exercises with sets/reps/weights to log, including a corrected list of sets for exercises already logged today.
 - workout_edit: fix one thing already logged: rename an exercise, change one set, or remove an exercise ("face full should be face pull", "set 2 of bench was 10 reps", "remove calves", "that wasn't squats, it was leg press").
 - metric: a daily number to record, today only protein in grams ("protein 110", "had about 95g protein"). Not an exercise log.
+- answer: a short reply to something the bot just said or asked: "ok", "yes", "no", "both", "the second one", "neither", or a name offered as the answer ("face pull"). Use the Conversation block to see what it answers.
 - snooze: pause the agent's messages for a while.
 - chat: anything else, including questions and small talk, and saying what you are about to train with no sets yet ("today's workout: legs/shoulders"). Be confident about that last kind: it is chat, not unclear.
 Give a confidence from 0 to 1.`;
@@ -76,6 +77,9 @@ remove_exercise: exercise.
 date: only when a past day was named ("yesterday"); otherwise leave empty. Never invent exercises that are not logged.`,
 
   metric: `Daily number. metric: protein_g. value: the number of grams as said (the day's total so far). date: only when a past day was named, else empty.`,
+
+  answer: `A reply to the bot. kind: affirm (ok, yes, sure, looks good, lock it) | deny (no, neither, never mind, leave it) | choose (picks from the numbered options of the open question: ids = their numbers, "both" or "all" = every number, "the second" = [2]) | new (keep what I said as a new exercise) | name (offers a name as the answer: put it in name).
+ids: only for choose, else empty. name: only for name, else empty.`,
 
   snooze: `Snooze. duration_hours (default 2) and a short reason.`,
 

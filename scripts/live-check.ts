@@ -56,6 +56,8 @@ applyOp(db, { type: "log_workout", date: TODAY, mode: "append", exercises: [
   { name: "Flat Bench Press", sets: [set(20, 12), set(20, 12), set(20, 12)] },
   { name: "Calf Raise", sets: [set(0, 20)] },
 ] } as never, { now });
+// Logging that session ticked today's gym item; the plan cases need it open.
+db.run("UPDATE plan_item SET status = 'planned' WHERE lane = 'fitness' AND date = ?", TODAY);
 const bankReminder = insertReminder(db, { text: "call the bank about the card", dueMs: istWallToMs(TOMORROW, "16:00") }, nowMs);
 const item = (date: string, pred: (t: string) => boolean) => loadItems(db, date).find((i) => pred(i.title))?.id;
 const bookId = (like: string) => db.all<{ id: number }>("SELECT id FROM reading_item WHERE title LIKE ?", like)[0]?.id;
@@ -223,7 +225,7 @@ if (useWorkers) {
 // ------------------------------------------------------------------ run
 
 const groups = only ? only.split(",") : null;
-const selected = cases.filter((c) => (!useWorkers || c.workers) && (!groups || groups.includes(c.group)) && (!process.env.ONLY_TEXT || process.env.ONLY_TEXT.split("|").includes(c.text)));
+const selected = cases.filter((c) => (!useWorkers || c.workers) && (!groups || groups.includes(c.group)) && (!process.env.ONLY_TEXT || process.env.ONLY_TEXT.split("|").includes(c.text.split(String.fromCharCode(10))[0])));
 console.log(`Live check: ${backend.name}, ${selected.length} phrases, now = Mon 2 Nov 10:00 IST\n`);
 
 let pass = 0;

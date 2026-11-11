@@ -21,14 +21,14 @@ export const CLASSIFY_CARD = `Classify the message into exactly one intent:
 - study_done: finished study work that is NOT simply today's planned item (e.g. "did 3 DSA problems").
 - reminder: remind me / alert me at a time or after a delay, a task due by a day, a repeating reminder, or cancelling one.
 - note: a short thing to remember for a few days ("my knee hurts, go easy on legs").
-- workout: exercises with sets/reps/weights to log, including a corrected list of sets for exercises already logged today.
+- workout: exercises with sets/reps/weights to log, including a corrected list of sets for exercises already logged today. Any message that contains sets, reps or weights is a workout, even if it also says "done with shoulders" or mentions protein.
 - workout_edit: fix one thing already logged: rename an exercise, change one set, or remove an exercise ("face full should be face pull", "set 2 of bench was 10 reps", "remove calves", "that wasn't squats, it was leg press").
 - metric: a daily number to record, today only protein in grams ("protein 110", "had about 95g protein"). Not an exercise log.
 - answer: a short reply to something the bot just said or asked: "ok", "yes", "no", "both", "the second one", "neither", or a name offered as the answer ("face pull"). Use the Conversation block to see what it answers.
 - status: going to bed or waking up ("good night", "sleeping", "gn", "off to bed", "up", "good morning", "gm").
 - office: which weekdays you are in the office this week ("office tue thu", "in the office Monday and Wednesday", "working from home all week").
 - snooze: pause the agent's messages for a while.
-- chat: anything else, including questions and small talk, and saying what you are about to train with no sets yet ("today's workout: legs/shoulders"). Be confident about that last kind: it is chat, not unclear.
+- chat: anything else, including questions and small talk, and saying what you are about to train when the message has no sets, reps or weights at all ("today's workout: legs/shoulders"). Be confident about that last kind: it is chat, not unclear.
 Give a confidence from 0 to 1.`;
 
 export const LANE_CARDS: Record<Intent, string> = {

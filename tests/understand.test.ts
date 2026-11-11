@@ -289,14 +289,42 @@ test("workout_edit sees what is logged today and today's calendar", () => {
   assert.match(p.system, /rename_exercise: exercise = the exercise as currently logged/);
 });
 
-test("metric: protein becomes a log_metric op, a past day is allowed, nonsense is rejected", async () => {
+test("metric: grams add, a preset times a count is resolved in code, totals set, presets change", async () => {
   const db = world();
-  const today = await run(db, model("metric", 0.9, { metric: "protein_g", value: 110 }), "protein 110");
-  assert.deepEqual(today, { kind: "ops", ops: [{ type: "log_metric", date: "2026-10-30", metric: "protein_g", value: 110 }] });
-  const past = await run(db, model("metric", 0.9, { metric: "protein_g", value: 95, date: "2026-10-28" }), "had 95 g protein on Wednesday");
-  assert.deepEqual(past, { kind: "ops", ops: [{ type: "log_metric", date: "2026-10-28", metric: "protein_g", value: 95 }] });
-  const bad = await run(db, model("metric", 0.9, { metric: "protein_g", value: 5000 }), "protein 5000");
-  assert.equal(bad.kind, "inbox");
+  const m = (fields: Record<string, unknown>) => model("metric", 0.9, { metric: "protein_g", value: 0, label: "", count: 1, ...fields });
+  const D = "2026-10-30";
+
+  assert.deepEqual(await run(db, m({ action: "add", value: 26 }), "protein 26"),
+    { kind: "ops", ops: [{ type: "log_metric", date: D, metric: "protein_g", value: 26, mode: "add" }] });
+  assert.deepEqual(await run(db, m({ action: "add", label: "whey" }), "whey"),
+    { kind: "ops", ops: [{ type: "log_metric", date: D, metric: "protein_g", value: 26, mode: "add", label: "whey" }] });
+  assert.deepEqual(await run(db, m({ action: "add", label: "scoop of whey", count: 2 }), "two scoops of whey"),
+    { kind: "ops", ops: [{ type: "log_metric", date: D, metric: "protein_g", value: 52, mode: "add", label: "whey ×2" }] }, "the model never adds");
+  assert.deepEqual(await run(db, m({ action: "add", label: "soy chunks" }), "soy chunks"),
+    { kind: "ops", ops: [{ type: "log_metric", date: D, metric: "protein_g", value: 50, mode: "add", label: "soy chunks" }] });
+  assert.deepEqual(await run(db, m({ action: "set_total", value: 90 }), "protein total 90"),
+    { kind: "ops", ops: [{ type: "log_metric", date: D, metric: "protein_g", value: 90, mode: "set" }] });
+  assert.deepEqual(await run(db, m({ action: "add", value: 95, date: "2026-10-28" }), "had 95 g protein on Wednesday"),
+    { kind: "ops", ops: [{ type: "log_metric", date: "2026-10-28", metric: "protein_g", value: 95, mode: "add" }] });
+
+  const preset = await run(db, m({ action: "set_preset", label: "Whey", value: 30 }), "whey is 30 g now");
+  assert.equal(preset.kind, "ops");
+  if (preset.kind === "ops") {
+    assert.equal(preset.ops[0].type, "set_config");
+    assert.deepEqual(JSON.parse(preset.ops[0].value as string), { whey: 30, "soy chunks": 50 });
+  }
+});
+
+test("metric: an unknown food asks for grams instead of guessing; impossible numbers are rejected", async () => {
+  const db = world();
+  const m = (fields: Record<string, unknown>) => model("metric", 0.9, { metric: "protein_g", value: 0, label: "", count: 1, ...fields });
+  const ask = await run(db, m({ action: "add", label: "dal" }), "dal");
+  assert.equal(ask.kind, "reply");
+  if (ask.kind === "reply") assert.match(ask.html, /don't know "dal".*whey 26 g, soy chunks 50 g/);
+  assert.equal((await run(db, m({ action: "add" }), "protein")).kind, "reply", "no number and no name: asks how many");
+  assert.equal((await run(db, m({ action: "add", value: 5000 }), "protein 5000")).kind, "inbox");
+  assert.equal((await run(db, m({ action: "set_total" }), "protein total")).kind, "inbox", "a total needs a number");
+  assert.equal((await run(db, m({ action: "set_preset", label: "whey" }), "whey is")).kind, "inbox");
 });
 
 test("answer: the meaning is mapped, ids outside 1-20 are dropped, and the classifier's confidence travels with it", async () => {

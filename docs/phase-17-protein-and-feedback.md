@@ -65,8 +65,8 @@ New intent `feedback` (`kind`, `text`). The classify card separates it from `not
 
 Each ends with typecheck, test typecheck and tests green, and its own commit.
 
-- [ ] **17.1 Protein entries and add/set.** Migration 10 (`protein_entry`, `feedback`), `log_metric` `mode`/`label`, handler, band-aware reply, undo; tests.
-- [ ] **17.2 Presets and the `metric` intent.** `protein.presets` config, snapshot line, `metric` schema (`action`, `value`, `label`, `count`), `set_preset`; the workout lane's `protein_g` becomes an add; tests and live-check.
+- [x] **17.1 Protein entries and add/set.** Migration 10 (`protein_entry`, `feedback`), `log_metric` `mode`/`label`, handler, band-aware reply, undo; tests.
+- [x] **17.2 Presets and the `metric` intent.** `protein.presets` config, snapshot line, `metric` schema (`action`, `value`, `label`, `count`), `set_preset`; the workout lane's `protein_g` becomes an add; tests and live-check.
 - [ ] **17.3 Commands and the evening line (P-2).** `/protein` add / total / list; conditional evening line; tests.
 - [ ] **17.4 Feedback.** `feedback` intent, `add_feedback` op, `/feedback`, view, daily-note section, note reply wording; tests and live-check.
 - [ ] **17.5 Docs.** `/help`, this doc, plan, backlog statuses (B4, B5, P-1, P-2).

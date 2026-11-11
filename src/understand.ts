@@ -19,6 +19,7 @@ import { resolvePlanItem } from "./day.ts";
 import { addDays, dayKey, istWallToMs } from "./time.ts";
 import { findExercise } from "./exercises.ts";
 import { parseSets } from "./sets.ts";
+import { PRESETS_KEY, findPreset, proteinPresets } from "./fitness.ts";
 import type { LogWorkoutOp } from "./fitness.ts";
 import type { Answer, Pending } from "./convo.ts";
 
@@ -187,7 +188,7 @@ const EXTRACT_SCHEMAS: Record<Intent, JsonSchema> = {
       replace: { type: "boolean", description: "true only when correcting sets already logged" },
       pain: { type: "string" },
       notes: { type: "string" },
-      protein_g: { type: "number", description: "grams of protein if mentioned" },
+      protein_g: { type: "number", description: "grams of protein mentioned in this message (an amount eaten, not a total)" },
     },
     ["exercises"],
   ),
@@ -206,10 +207,13 @@ const EXTRACT_SCHEMAS: Record<Intent, JsonSchema> = {
   metric: S(
     {
       metric: { type: "string", enum: ["protein_g"] },
-      value: { type: "number", description: "grams" },
+      action: { type: "string", enum: ["add", "set_total", "set_preset"], description: "add = protein eaten now; set_total = the day's total; set_preset = change what a named amount is" },
+      value: { type: "number", description: "grams as said; 0 when only a preset name was said" },
+      label: { type: "string", description: "the preset or food named (whey, soy chunks), else empty" },
+      count: { type: "number", description: "how many of the named preset (two scoops = 2), else 1" },
       date: { type: "string", description: "YYYY-MM-DD only if a past day was named, else empty" },
     },
-    ["metric", "value"],
+    ["metric", "action", "value", "label", "count"],
   ),
   answer: S(
     {
@@ -383,18 +387,43 @@ const LANE_HANDLERS: Record<Intent, (db: Db, nowMs: number) => { validate: (raw:
     },
   }),
 
-  metric: (_db, nowMs) => ({
+  metric: (db, nowMs) => ({
     validate: (raw) => {
       const o = asObj(raw);
       const today = dayKey(nowMs);
       const date = optStr(o, "date", 10) ?? today;
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date > today || date < addDays(today, -7)) throw new ValidationError("date must be today or one of the last 7 days");
-      return { metric: oneOf(o, "metric", ["protein_g"] as const), value: Math.round(num(o, "value", 1, 400)), date };
+      const action = oneOf(o, "action", ["add", "set_total", "set_preset"] as const);
+      const value = typeof o.value === "number" && o.value > 0 ? Math.round(num(o, "value", 1, 400)) : 0;
+      const label = optStr(o, "label", 60)?.toLowerCase() ?? "";
+      const count = typeof o.count === "number" && o.count >= 1 ? Math.min(20, Math.round(o.count)) : 1;
+      if (action === "set_total" && value === 0) throw new ValidationError("set_total needs the grams");
+      if (action === "set_preset" && (value === 0 || !label)) throw new ValidationError("set_preset needs a name and the grams");
+      return { metric: oneOf(o, "metric", ["protein_g"] as const), action, value, label, count, date };
     },
-    map: (v: { metric: "protein_g"; value: number; date: string }): Outcome => ({
-      kind: "ops",
-      ops: [{ type: "log_metric", date: v.date, metric: v.metric, value: v.value }],
-    }),
+    map: (v: { metric: "protein_g"; action: "add" | "set_total" | "set_preset"; value: number; label: string; count: number; date: string }): Outcome => {
+      const presets = proteinPresets(db);
+      if (v.action === "set_preset") {
+        const next = { ...presets, [v.label]: v.value };
+        return { kind: "ops", ops: [{ type: "set_config", key: PRESETS_KEY, value: JSON.stringify(next) }] };
+      }
+      if (v.action === "set_total") {
+        return { kind: "ops", ops: [{ type: "log_metric", date: v.date, metric: v.metric, value: v.value, mode: "set" }] };
+      }
+      // add: grams said win; otherwise a preset times the count. Code does the sum, never the model.
+      if (v.value > 0) return { kind: "ops", ops: [{ type: "log_metric", date: v.date, metric: v.metric, value: v.value, mode: "add", ...(v.label ? { label: v.label } : {}) }] };
+      const hit = findPreset(presets, v.label);
+      if (!hit) {
+        const known = Object.entries(presets).map(([n, g]) => `${n} ${g} g`).join(", ");
+        return {
+          kind: "reply",
+          html: v.label
+            ? `I don't know "${esc(v.label)}" as a protein amount yet. Say how many grams (e.g. <i>${esc(v.label)} 20 g protein</i>) or teach me: <i>${esc(v.label)} is 20 g</i>. Known: ${esc(known)}.`
+            : `How many grams? Known amounts: ${esc(known)}.`,
+        };
+      }
+      return { kind: "ops", ops: [{ type: "log_metric", date: v.date, metric: v.metric, value: hit.grams * v.count, mode: "add", label: v.count > 1 ? `${hit.name} ×${v.count}` : hit.name }] };
+    },
   }),
 
   answer: () => ({

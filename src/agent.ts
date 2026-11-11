@@ -466,8 +466,8 @@ Total queued articles: <b>${count}</b>`
       case "workout": {
         let extra = "";
         if (outcome.protein) {
-          this.applyPlanOp({ type: "log_metric", date: outcome.op.date, metric: "protein_g", value: outcome.protein }, { source: "telegram", raw: text });
-          extra = `\n🥩 Protein: ${outcome.protein} g`;
+          const added = this.applyPlanOp({ type: "log_metric", date: outcome.op.date, metric: "protein_g", value: outcome.protein, mode: "add" }, { source: "telegram", raw: text });
+          extra = `\n🥩 ${escapeHtml(added.summary)}`;
         }
         await telegram.sendMessage(chatId, `${this.logWorkout(outcome.op, text)}${extra}${heard}`);
         return;

@@ -175,6 +175,13 @@ const cases: Case[] = [
   { group: "office", text: "I'm in the office on Monday and Wednesday this week", expect: "Mon, Wed", check: (o) => o.kind === "office" && JSON.stringify(o.weekdays) === "[0,2]" },
   { group: "office", text: "working from home all week", expect: "none", check: (o) => o.kind === "office" && o.weekdays.length === 0 },
   { group: "office", text: "add office party on friday to my plan", expect: "a plan edit, not office days", check: (o) => o.kind !== "office" },
+  // protein as additions (Phase 17)
+  { group: "metric", text: "protein 26", expect: "add 26", check: isOp("log_metric", { value: 26, mode: "add" }) },
+  { group: "metric", text: "whey", expect: "add 26 (whey preset)", check: isOp("log_metric", { value: 26, mode: "add", label: has("whey") }) },
+  { group: "metric", text: "had two scoops of whey", expect: "add 52 (2 x whey)", check: isOp("log_metric", { value: 52, mode: "add" }) },
+  { group: "metric", text: "soy chunks", expect: "add 50 (soy chunks preset)", check: isOp("log_metric", { value: 50, mode: "add" }) },
+  { group: "metric", text: "protein total 90", expect: "set the total to 90", check: isOp("log_metric", { value: 90, mode: "set" }) },
+  { group: "metric", text: "whey is 30 g now", expect: "set_config presets", check: isOp("set_config", { key: "protein.presets" }) },
   { group: "snooze", text: "pause your messages for 3 hours, I'm in a meeting", expect: "snooze 3h", check: (o) => o.kind === "snooze" && o.hours === 3 },
   { group: "chat", text: "hey how's it going", expect: "a reply, nothing changed", check: (o) => o.kind === "reply" },
   { group: "chat", text: "Today's workout\nLegs/Shoulders", expect: "a reply asking for the sets, not the inbox", check: (o) => o.kind === "reply" && /set/i.test(o.html) },

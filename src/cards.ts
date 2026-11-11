@@ -23,7 +23,7 @@ export const CLASSIFY_CARD = `Classify the message into exactly one intent:
 - note: a short thing to remember for a few days ("my knee hurts, go easy on legs").
 - workout: exercises with sets/reps/weights to log, including a corrected list of sets for exercises already logged today. Any message that contains sets, reps or weights is a workout, even if it also says "done with shoulders" or mentions protein.
 - workout_edit: fix one thing already logged: rename an exercise, change one set, or remove an exercise ("face full should be face pull", "set 2 of bench was 10 reps", "remove calves", "that wasn't squats, it was leg press").
-- metric: a daily number to record, today only protein in grams ("protein 110", "had about 95g protein"). Not an exercise log.
+- metric: protein. Adding some ("protein 26", "had 30 g protein", "whey", "two scoops of whey", "soy chunks"), giving the day's total ("protein total 90"), or changing what a named amount is ("whey is 30 g now"). Not an exercise log.
 - answer: a short reply to something the bot just said or asked: "ok", "yes", "no", "both", "the second one", "neither", or a name offered as the answer ("face pull"). Use the Conversation block to see what it answers.
 - status: going to bed or waking up ("good night", "sleeping", "gn", "off to bed", "up", "good morning", "gm").
 - office: which weekdays you are in the office this week ("office tue thu", "in the office Monday and Wednesday", "working from home all week").
@@ -78,7 +78,11 @@ amend_set: exercise, set_no (1 = first set; "the last set" = the highest number 
 remove_exercise: exercise.
 date: only when a past day was named ("yesterday"); otherwise leave empty. Never invent exercises that are not logged.`,
 
-  metric: `Daily number. metric: protein_g. value: the number of grams as said (the day's total so far). date: only when a past day was named, else empty.`,
+  metric: `Protein. metric: protein_g. action:
+add: protein eaten now. value = the grams if a number was said ("protein 26", "30 g protein"), else 0 with label = the named amount ("whey", "soy chunks") and count = how many ("two scoops" = 2). Never add things up yourself.
+set_total: ONLY when the user says it is the total: words like total, so far, in all, altogether, make it, set it to ("protein total 90", "make it 90"). A bare number ("protein 110", "had 30 g protein", "had about 95g protein today") is always add; the word "today" alone does not make it a total.
+set_preset: the user says what a named amount is ("whey is 30 g now"): label and value.
+Presets and today's total are listed below. date: only when a past day was named, else empty.`,
 
   answer: `A reply to the bot. kind: affirm (ok, yes, sure, looks good, lock it) | deny (no, neither, never mind, leave it) | choose (picks from the numbered options of the open question: ids = their numbers, "both" or "all" = every number, "the second" = [2]) | new (keep what I said as a new exercise) | name (offers a name as the answer: put it in name).
 ids: only for choose, else empty. name: only for name, else empty.`,

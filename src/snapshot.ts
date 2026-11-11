@@ -7,7 +7,7 @@ import { istNowLabel } from "./reminder-time.ts";
 import { currentReading, pickCandidates } from "./reading.ts";
 import { queryPlan } from "./seed.ts";
 import { loadItems } from "./day.ts";
-import { sessionNotation } from "./fitness.ts";
+import { proteinFor, proteinPresets, sessionNotation } from "./fitness.ts";
 import { addDays, calendarDate, dateLabel, dayKey } from "./time.ts";
 
 const clip = (s: string, n = 90) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
@@ -61,6 +61,12 @@ export function buildSnapshot(db: Db, intent: Intent, nowMs: number): string {
       "SELECT title FROM reading_item WHERE shortlist = 1 AND state NOT IN ('done','dropped') ORDER BY slot, ordinal LIMIT 14",
     );
     if (shortlist.length > 0) lines.push(`Shortlist: ${shortlist.map((s) => clip(s.title, 45)).join("; ")}.`);
+  }
+
+  if (intent === "metric") {
+    const presets = Object.entries(proteinPresets(db)).map(([n, g]) => `${n} ${g} g`).join(", ");
+    const total = proteinFor(db, today);
+    lines.push(`Calendar: today ${dateLabel(today)} = ${today}; yesterday = ${addDays(today, -1)}.`, `Protein presets: ${presets}. Today so far: ${total === null ? "nothing" : `${Math.round(total)} g`}.`);
   }
 
   if (intent === "workout" || intent === "workout_edit") {

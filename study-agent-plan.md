@@ -286,8 +286,8 @@ flowchart TD
 ### Phase 17: Protein as additions, presets, and a feedback intent [B4, B5, P-1, P-2]
 * **Phase Doc:** `docs/phase-17-protein-and-feedback.md`
 * **Sub-steps:**
-  - [ ] 17.1 Protein entries and add/set (`protein_entry`, `feedback` tables; `log_metric` mode and label; band-aware reply; undo).
-  - [ ] 17.2 Presets and the `metric` intent (whey 26, soy chunks 50, editable; the model returns label and count, code resolves grams).
+  - [x] 17.1 Protein entries and add/set (`protein_entry`, `feedback` tables; `log_metric` mode and label; band-aware reply; undo).
+  - [x] 17.2 Presets and the `metric` intent (whey 26, soy chunks 50, editable; the model returns label and count, code resolves grams).
   - [ ] 17.3 `/protein` add / total / list; conditional evening line (P-2).
   - [ ] 17.4 `feedback` intent, `add_feedback`, `/feedback`, daily-note section, honest wording for ordinary notes (B4).
   - [ ] 17.5 `/help`, docs, backlog statuses.

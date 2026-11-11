@@ -209,6 +209,32 @@ export function proteinBand(db: Db): { floor: number; ceiling: number } {
   return { floor: t && t.active && t.floor ? t.floor : 90, ceiling: t && t.active && t.goal ? t.goal : 120 };
 }
 
+export const DEFAULT_PRESETS: Record<string, number> = { whey: 26, "soy chunks": 50 };
+export const PRESETS_KEY = "protein.presets";
+
+/** Named protein amounts ("whey" = 26 g), from config; the defaults until you change one. */
+export function proteinPresets(db: Db): Record<string, number> {
+  const raw = db.all<{ value: string }>("SELECT value FROM config WHERE key = ?", PRESETS_KEY)[0]?.value;
+  if (!raw) return { ...DEFAULT_PRESETS };
+  try {
+    const o = JSON.parse(raw) as Record<string, unknown>;
+    const out: Record<string, number> = {};
+    for (const [k, v] of Object.entries(o)) if (typeof v === "number" && v > 0 && v <= 400) out[k.toLowerCase()] = v;
+    return Object.keys(out).length > 0 ? out : { ...DEFAULT_PRESETS };
+  } catch {
+    return { ...DEFAULT_PRESETS };
+  }
+}
+
+/** The preset a label means: exact, then one that contains the other ("scoop of whey" -> whey). */
+export function findPreset(presets: Record<string, number>, label: string): { name: string; grams: number } | null {
+  const l = label.trim().toLowerCase();
+  if (!l) return null;
+  const names = Object.keys(presets);
+  const name = names.find((n) => n === l) ?? names.find((n) => l.includes(n) || n.includes(l));
+  return name ? { name, grams: presets[name] } : null;
+}
+
 const signed = (n: number) => `${n >= 0 ? "+" : "-"}${Math.abs(Math.round(n))}`;
 
 /**

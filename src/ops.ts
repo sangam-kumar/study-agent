@@ -9,7 +9,7 @@ import { lastInsertId } from "./db/db.ts";
 import type { Db, SqlValue } from "./db/db.ts";
 import { displayName, loadCatalog, matchExercise, suggestExercise } from "./exercises.ts";
 import type { ExerciseRow } from "./exercises.ts";
-import { findSessionExercise, loadSession, sessionShape } from "./fitness.ts";
+import { findSessionExercise, loadSession, proteinChange, sessionShape } from "./fitness.ts";
 import { formatSet } from "./sets.ts";
 import type { SetKind } from "./sets.ts";
 
@@ -71,7 +71,8 @@ export type Op =
   | { type: "rename_exercise"; date: string; from: string; to: string }
   | { type: "amend_set"; date: string; exercise: string; set_no: number; weight_kg?: number; reps?: number; duration_s?: number }
   | { type: "remove_exercise"; date: string; exercise: string }
-  | { type: "log_metric"; date: string; metric: (typeof METRICS)[number]; value: number }
+  /** mode "add" adds `value` to the day's total; "set" (default) makes it the total. `label` names the source (whey). */
+  | { type: "log_metric"; date: string; metric: (typeof METRICS)[number]; value: number; mode?: "add" | "set"; label?: string }
   | { type: "add_jot"; reading_id: number; text: string; locator?: string; kind?: (typeof JOT_KINDS)[number] }
   /** "on p140" / "ch3 done": the book's place; also ticks off that day's reading item for the book. */
   | { type: "set_progress"; reading_id: number; locator: string; date: string }
@@ -289,7 +290,9 @@ export function validateOp(input: unknown): Op {
     case "log_metric": {
       const value = optNum(o, "value", 0, 1000);
       if (value === null) fail("value is required");
-      return { type: "log_metric", date: date(o, "date"), metric: oneOf(o, "metric", METRICS), value };
+      const mode = o.mode === undefined ? undefined : oneOf(o, "mode", ["add", "set"] as const);
+      const label = optStr(o, "label", 60);
+      return { type: "log_metric", date: date(o, "date"), metric: oneOf(o, "metric", METRICS), value, ...(mode ? { mode } : {}), ...(label ? { label } : {}) };
     }
     case "add_jot":
       return {
@@ -824,9 +827,16 @@ const HANDLERS: { [K in Op["type"]]: (h: HandlerCtx, op: Extract<Op, { type: K }
 
   log_metric(h, op) {
     const cur = h.db.all<Row>("SELECT * FROM metric_log WHERE date = ? AND metric = ?", op.date, op.metric)[0];
-    if (cur) h.rec.update("metric_log", cur.id as number, { value: op.value, ts: iso(h.now) });
-    else h.rec.insert("metric_log", { date: op.date, metric: op.metric, value: op.value, ts: iso(h.now) });
-    return { lane: "fitness", refId: op.date, summary: `Protein ${op.date}: ${op.value} g` };
+    const before = cur ? Number(cur.value) : 0;
+    const mode = op.mode ?? "set";
+    const after = mode === "add" ? before + op.value : op.value;
+    if (cur) h.rec.update("metric_log", cur.id as number, { value: after, ts: iso(h.now) });
+    else h.rec.insert("metric_log", { date: op.date, metric: op.metric, value: after, ts: iso(h.now) });
+    // The entry records the change, so the day can be explained; the total above stays authoritative.
+    if (after !== before) {
+      h.rec.insert("protein_entry", { date: op.date, grams: after - before, label: op.label ?? (mode === "set" ? "total set" : null), ts: iso(h.now) });
+    }
+    return { lane: "fitness", refId: op.date, summary: proteinChange(h.db, op.date, mode, after - before, after, op.label) };
   },
 
   add_jot(h, op) {

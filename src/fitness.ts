@@ -199,6 +199,40 @@ export function proteinFor(db: Db, date: string): number | null {
   return db.all<{ value: number }>("SELECT value FROM metric_log WHERE metric = 'protein_g' AND date = ?", date)[0]?.value ?? null;
 }
 
+// ------------------------------------------------------------------ protein
+
+/** The daily band: at least `floor`, at most `ceiling`. From the protein target when seeded, else 90 to 120. */
+export function proteinBand(db: Db): { floor: number; ceiling: number } {
+  const t = db.all<{ floor: number | null; goal: number | null; active: number }>(
+    "SELECT floor, goal, active FROM target WHERE lane = 'fitness' AND metric = 'protein_g_avg' AND period = 'week'",
+  )[0];
+  return { floor: t && t.active && t.floor ? t.floor : 90, ceiling: t && t.active && t.goal ? t.goal : 120 };
+}
+
+const signed = (n: number) => `${n >= 0 ? "+" : "-"}${Math.abs(Math.round(n))}`;
+
+/**
+ * The one line after a protein change: what changed and where the day stands against the band.
+ *   whey +26 → 52 / 90 g   ·   protein total → 96 g ✓   ·   whey +30 → 128 g, above your 120 g ceiling (no need for more)
+ */
+export function proteinChange(db: Db, _date: string, mode: "add" | "set", delta: number, total: number, label?: string): string {
+  const { floor, ceiling } = proteinBand(db);
+  const head = mode === "set" ? "protein total" : `${label ?? "protein"} ${signed(delta)}`;
+  const t = Math.round(total);
+  const tail = t < floor ? `${t} / ${floor} g` : t <= ceiling ? `${t} g ✓` : `${t} g, above your ${ceiling} g ceiling (no need for more)`;
+  return `${head} → ${tail}`;
+}
+
+/** Today's protein entries, oldest first, for "/protein" and the dashboard. Days from before entries existed show the remainder. */
+export function proteinEntries(db: Db, date: string): { label: string; grams: number }[] {
+  const rows = db.all<{ label: string | null; grams: number }>("SELECT label, grams FROM protein_entry WHERE date = ? ORDER BY id", date)
+    .map((r) => ({ label: r.label ?? "protein", grams: r.grams }));
+  const total = proteinFor(db, date);
+  const known = rows.reduce((a, r) => a + r.grams, 0);
+  if (total !== null && Math.round(total - known) !== 0) rows.unshift({ label: "earlier total", grams: total - known });
+  return rows;
+}
+
 /** /gym: the week against targets, then today's (or the latest) session. */
 export function renderGymWeek(db: Db, today: string): string {
   const w = weekFitness(db, today);

@@ -318,6 +318,26 @@ CREATE INDEX IF NOT EXISTS idx_chat_log_tg ON chat_log(tg_message_id);
 CREATE INDEX IF NOT EXISTS idx_chat_log_ts ON chat_log(ts);
 `;
 
+const V10_SQL = `
+CREATE TABLE IF NOT EXISTS protein_entry (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  date TEXT NOT NULL,
+  grams REAL NOT NULL,
+  label TEXT,
+  ts TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_protein_entry_date ON protein_entry(date, id);
+CREATE TABLE IF NOT EXISTS feedback (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL,
+  date TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK(kind IN ('bug','idea','other')),
+  text TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','done'))
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_date ON feedback(date, id);
+`;
+
 export interface Migration {
   version: number;
   name: string;
@@ -336,6 +356,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 7, name: "reminders v2: tasks, repeats, follow-up", sql: V7_SQL },
   { version: 8, name: "jots and reading progress", sql: V8_SQL },
   { version: 9, name: "chat log: both sides of the conversation", sql: V9_SQL },
+  { version: 10, name: "protein entries and agent feedback", sql: V10_SQL },
 ];
 
 /** Apply any migration not yet recorded. Safe on a database that predates schema_migrations. */

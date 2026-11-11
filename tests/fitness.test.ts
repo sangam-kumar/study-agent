@@ -340,3 +340,34 @@ test("v1 workout logs move into sessions", () => {
   assert.deepEqual(s.exercises.map((e) => [e.name, e.sets.length]), [["Flat Dumbbell Bench Press", 3], ["Plank", 0]]);
   assert.equal(migrateV1Workouts(db, at(MON, "12:00")), 0, "running again moves nothing");
 });
+
+// ------------------------------------------------------------------ protein as additions (Phase 17)
+
+import { proteinBand, proteinEntries, proteinFor } from "../src/fitness.ts";
+
+test("protein: add accumulates, set corrects, each change is an entry, undo reverses both", () => {
+  const db = migratedDb();
+  const op = (value: number, mode?: "add" | "set", label?: string) =>
+    applyOp(db, { type: "log_metric", date: "2026-11-10", metric: "protein_g", value, ...(mode ? { mode } : {}), ...(label ? { label } : {}) }, { now: () => new Date("2026-11-10T05:00:00Z") });
+
+  assert.match(op(26, "add", "whey").summary, /^whey \+26 → 26 \/ 90 g$/);
+  assert.match(op(26, "add", "whey").summary, /^whey \+26 → 52 \/ 90 g$/);
+  assert.equal(proteinFor(db, "2026-11-10"), 52);
+  assert.match(op(90, "set").summary, /^protein total → 90 g ✓$/);
+  assert.deepEqual(proteinEntries(db, "2026-11-10"), [{ label: "whey", grams: 26 }, { label: "whey", grams: 26 }, { label: "total set", grams: 38 }]);
+  assert.match(op(40, "add", "soy chunks").summary, /soy chunks \+40 → 130 g, above your 120 g ceiling/);
+
+  undoLast(db);
+  assert.equal(proteinFor(db, "2026-11-10"), 90);
+  assert.equal(proteinEntries(db, "2026-11-10").length, 3, "the undone entry is gone too");
+});
+
+test("protein: a plain set (the old behaviour) still works, and a day from before entries shows the remainder", () => {
+  const db = migratedDb();
+  db.run("INSERT INTO metric_log (date, metric, value, ts) VALUES ('2026-11-01', 'protein_g', 100, '2026-11-01T15:00:00Z')");
+  assert.deepEqual(proteinEntries(db, "2026-11-01"), [{ label: "earlier total", grams: 100 }]);
+  applyOp(db, { type: "log_metric", date: "2026-11-01", metric: "protein_g", value: 110, mode: "add", label: "whey" }, { now: () => new Date("2026-11-01T16:00:00Z") });
+  assert.equal(proteinFor(db, "2026-11-01"), 210);
+  assert.deepEqual(proteinEntries(db, "2026-11-01"), [{ label: "earlier total", grams: 100 }, { label: "whey", grams: 110 }]);
+  assert.deepEqual(proteinBand(db), { floor: 90, ceiling: 120 }, "defaults when no target is seeded");
+});

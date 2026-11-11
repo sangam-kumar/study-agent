@@ -3,12 +3,12 @@
 // Scopes are explicit and composable so nothing real is deleted by accident:
 //
 //   logs       interaction_logs, chat_log, processed_update
-//   workouts   workout sessions, exercises, sets, protein numbers, and the v1 workout_logs
+//   workouts   workout sessions, exercises, sets, protein numbers and entries, and the v1 workout_logs
 //              (the exercise catalog is kept)
 //   reminders  reminders                            (+ the matching delayed alarms: see agent.resetData)
 //   reading    reading_queue                        (v1 table)
 //   snooze     the pause (config 'mute', and the v1 bot_state snooze keys)
-//   plan       revision, event, inbox, plan_item, day_plan, override, note
+//   plan       revision, event, inbox, plan_item, day_plan, override, note, feedback
 //   pointers   every pointer back to unit 1         (units themselves are kept)
 //   shelf      reading_item states back to seeded (queued/backlog); hand-added books removed;
 //              jots and reading progress cleared
@@ -31,10 +31,10 @@ export class ResetError extends Error {
 /** Child tables first so foreign keys never block a delete. */
 const TABLES: Record<Exclude<ResetScope, "snooze" | "pointers" | "shelf">, string[]> = {
   logs: ["interaction_logs", "chat_log", "processed_update"],
-  workouts: ["session_set", "session_exercise", "workout_session", "metric_log", "workout_logs"],
+  workouts: ["session_set", "session_exercise", "workout_session", "metric_log", "protein_entry", "workout_logs"],
   reminders: ["reminders"],
   reading: ["reading_queue"],
-  plan: ["revision", "event", "inbox", "plan_item", "day_plan", "override", "note"],
+  plan: ["revision", "event", "inbox", "plan_item", "day_plan", "override", "note", "feedback"],
 };
 
 /** Anything the user changed: moved out of its seeded state, or added by hand (no seed_key). */

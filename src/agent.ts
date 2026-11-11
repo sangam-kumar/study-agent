@@ -1,3 +1,5 @@
+import { logIn, logOut, noteOutcome } from "./chatlog.ts";
+import { buildConversation } from "./conversation.ts";
 import { Agent } from "agents";
 import { TelegramClient } from "./telegram/bot";
 import {
@@ -52,6 +54,12 @@ import { booksWithJots, findBook, notesPath, renderJots, renderNotesMarkdown, so
 
 /** Processed-update rows older than this are pruned; replays beyond it are not a concern. */
 const PROCESSED_UPDATE_TTL_MS = 7 * 24 * 3600 * 1000;
+
+/** One inbound message: its conversation-log row and the message it was a swipe-reply to. */
+export interface Turn {
+  logId: number | null;
+  replyTo: { tgId: number; text: string } | null;
+}
 
 const escapeHtml = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
@@ -305,6 +313,20 @@ export class StudyAgent extends Agent<Env> {
     });
   }
 
+  /** Writes an inbound message to the conversation log; returns what the model needs to find it again. */
+  private logInbound(text: string, message: any): Turn {
+    const db = doDb(this.ctx);
+    const r = message?.reply_to_message;
+    const replyTo = r?.message_id ? { tgId: Number(r.message_id), text: typeof r.text === "string" ? (r.text as string) : "" } : null;
+    const logId = logIn(db, Date.now(), { text, tgId: message?.message_id, replyToTgId: replyTo?.tgId, replyToText: replyTo?.text });
+    return { logId, replyTo };
+  }
+
+  /** The one Telegram client: everything the bot sends is also written to the conversation log. */
+  private tg(): TelegramClient {
+    return new TelegramClient(this.env.TELEGRAM_BOT_TOKEN, (_chat, text, tgId, tag) => logOut(doDb(this.ctx), Date.now(), { text, tgId, tag }));
+  }
+
   private async processTelegramUpdate(update: any): Promise<void> {
     console.log("StudyAgent received Telegram update:", JSON.stringify(update));
 
@@ -330,7 +352,7 @@ export class StudyAgent extends Agent<Env> {
       return;
     }
 
-    const telegram = new TelegramClient(this.env.TELEGRAM_BOT_TOKEN);
+    const telegram = this.tg();
 
     try {
       // The first message of the morning is the wake signal: it delivers today's plan.
@@ -349,12 +371,13 @@ export class StudyAgent extends Agent<Env> {
           await telegram.sendMessage(chatId, "🎙️ Couldn't transcribe that voice note. Try again or type it.");
         } else {
           this.logInteraction("telegram_voice", transcript, { type: "voice" });
-          await this.handleNaturalLanguage(telegram, chatId, transcript, "telegram_voice");
+          await this.handleNaturalLanguage(telegram, chatId, transcript, "telegram_voice", this.logInbound(transcript, message));
         }
       } else if (message.text) {
         const text = (message.text as string).trim();
 
         if (text.startsWith("/")) {
+          this.logInbound(text, message);
           await this.handleCommand(telegram, chatId, text);
         } else if (text.startsWith("http://") || text.startsWith("https://")) {
           this.addToReadingQueue(text);
@@ -368,7 +391,7 @@ Total queued articles: <b>${count}</b>`
           );
         } else {
           this.logInteraction("telegram_text", text, { type: "text" });
-          await this.handleNaturalLanguage(telegram, chatId, text, "telegram_text");
+          await this.handleNaturalLanguage(telegram, chatId, text, "telegram_text", this.logInbound(text, message));
         }
       }
     } catch (err) {
@@ -379,7 +402,7 @@ Total queued articles: <b>${count}</b>`
 
   // --- Natural language (classify -> extract -> typed ops; see understand.ts) ---
 
-  private async handleNaturalLanguage(telegram: TelegramClient, chatId: string, text: string, source: string): Promise<void> {
+  private async handleNaturalLanguage(telegram: TelegramClient, chatId: string, text: string, source: string, turn: Turn = { logId: null, replyTo: null }): Promise<void> {
     const db = doDb(this.ctx);
     const nowMs = Date.now();
     const today = dayKey(nowMs);
@@ -421,7 +444,10 @@ Total queued articles: <b>${count}</b>`
       return;
     }
 
-    const outcome = await understand({ db, backends: buildBackends(this.env), nowMs }, text);
+    const started = Date.now();
+    const conversation = buildConversation(db, nowMs, { replyTo: turn.replyTo, excludeLogId: turn.logId });
+    const outcome = await understand({ db, backends: buildBackends(this.env), nowMs, conversation }, text);
+    if (turn.logId !== null) noteOutcome(db, turn.logId, { outcome: outcome.kind, ms: Date.now() - started });
     const heard = source === "telegram_voice" ? `\n\n<i>Heard: "${escapeHtml(text)}"</i>` : "";
 
     switch (outcome.kind) {
@@ -435,7 +461,7 @@ Total queued articles: <b>${count}</b>`
       }
       case "choose":
         setPending(db, nowMs, outcome.pending);
-        await telegram.sendMessage(chatId, `${outcome.html}${heard}`);
+        await telegram.sendMessage(chatId, `${outcome.html}${heard}`, "HTML", undefined, "question");
         return;
       case "reminder":
         await telegram.sendMessage(chatId, `${await this.scheduleReminderAt(outcome.dueMs, outcome.text, outcome.repeat)}${heard}`);
@@ -641,14 +667,14 @@ Total queued articles: <b>${count}</b>`
     const today = dayKey(nowMs);
     // Normally locked last night. If the evening never happened, plan and lock it now.
     if (loadDayRow(db, today)?.status !== "locked") lockDay(db, today, "auto", nowMs);
-    await telegram.sendMessage(chatId, renderMorning(db, today));
+    await telegram.sendMessage(chatId, renderMorning(db, today), "HTML", undefined, "morning_plan");
     if (trigger !== "manual") recordEvent(db, "morning_brief", today, { trigger }, nowMs);
     if (trigger === "fallback") recordAgentMessage(db, "morning", nowMs);
   }
 
   private telegramAndChat(): { telegram: TelegramClient; chatId: string } | null {
     const chatId = this.env.USER_TELEGRAM_CHAT_ID;
-    return chatId ? { telegram: new TelegramClient(this.env.TELEGRAM_BOT_TOKEN), chatId } : null;
+    return chatId ? { telegram: this.tg(), chatId } : null;
   }
 
   /**
@@ -722,7 +748,7 @@ Total queued articles: <b>${count}</b>`
 
       // Two days without a word: ask once, then go quiet until you write (the day loop keeps running).
       if (shouldAskPause(db, nowMs)) {
-        await t.telegram.sendMessage(t.chatId, pauseQuestion(db, nowMs), "HTML", PAUSE_BUTTONS);
+        await t.telegram.sendMessage(t.chatId, pauseQuestion(db, nowMs), "HTML", PAUSE_BUTTONS, "pause_question");
         recordAgentMessage(db, "pause_check", nowMs);
         this.setSnooze(SILENT_MUTE_DAYS * 24, "silent");
         return;
@@ -731,7 +757,7 @@ Total queued articles: <b>${count}</b>`
       const sunday = weekdayIndex(today) === 6;
       const officeLine = sunday ? this.officeDefaultForNextWeek(today) : "";
       const weekly = sunday ? `\n\n${renderWeekly(db, today)}` : "";
-      await t.telegram.sendMessage(t.chatId, `${renderEvening(db, today)}${weekly}${officeLine ? `\n\n${officeLine}` : ""}`);
+      await t.telegram.sendMessage(t.chatId, `${renderEvening(db, today)}${weekly}${officeLine ? `\n\n${officeLine}` : ""}`, "HTML", undefined, "evening_recap");
       recordEvent(db, "evening_recap", today, {}, nowMs);
       recordAgentMessage(db, "evening", nowMs);
     } catch (err) {
@@ -770,7 +796,7 @@ Total queued articles: <b>${count}</b>`
       }
       const item = pickNudge(db, dayKey(nowMs));
       if (!item) return;
-      await t.telegram.sendMessage(t.chatId, nudgeText(item), "HTML", NUDGE_BUTTONS(item.id));
+      await t.telegram.sendMessage(t.chatId, nudgeText(item), "HTML", NUDGE_BUTTONS(item.id), `nudge:${item.id}`);
       recordNudgeSent(db, item, nowMs);
     } catch (err) {
       console.error("jobNudge failed:", err);
@@ -1247,7 +1273,7 @@ Total queued articles: <b>${count}</b>`
     }
     const chatId = this.env.USER_TELEGRAM_CHAT_ID;
     if (!chatId) return;
-    const telegram = new TelegramClient(this.env.TELEGRAM_BOT_TOKEN);
+    const telegram = this.tg();
     if (!payload.reminderId) {
       await telegram.sendMessage(chatId, `⏰ <b>Reminder:</b>¶¶${escapeHtml(payload.text ?? "Reminder")}`);
       return;
@@ -1259,7 +1285,7 @@ Total queued articles: <b>${count}</b>`
     if (payload.dueMs !== undefined && Math.abs(r.trigger_at - payload.dueMs) > 1000) return;
 
     const nowMs = Date.now();
-    const messageId = await telegram.sendMessage(chatId, `⏰ <b>${escapeHtml(r.text)}</b>`, "HTML", REMINDER_BUTTONS(r.id));
+    const messageId = await telegram.sendMessage(chatId, `⏰ <b>${escapeHtml(r.text)}</b>`, "HTML", REMINDER_BUTTONS(r.id), `reminder:${r.id}`);
     markFired(db, r.id, nowMs, messageId ?? null);
     await this.schedule(30 * 60, "reminderFollowup", JSON.stringify({ reminderId: r.id, firedAt: getReminder(db, r.id)!.fired_at }));
 
@@ -1285,8 +1311,8 @@ Total queued articles: <b>${count}</b>`
     if (!r || r.status !== "dispatched" || r.repeats > 0 || r.fired_at !== payload.firedAt) return;
     const chatId = this.env.USER_TELEGRAM_CHAT_ID;
     if (!chatId) return;
-    const messageId = await new TelegramClient(this.env.TELEGRAM_BOT_TOKEN).sendMessage(
-      chatId, `⏰ Still on: <b>${escapeHtml(r.text)}</b>`, "HTML", REMINDER_BUTTONS(r.id),
+    const messageId = await this.tg().sendMessage(
+      chatId, `⏰ Still on: <b>${escapeHtml(r.text)}</b>`, "HTML", REMINDER_BUTTONS(r.id), `reminder:${r.id}`,
     );
     db.run("UPDATE reminders SET repeats = repeats + 1, message_id = COALESCE(?, message_id) WHERE id = ?", messageId ?? null, r.id);
   }
@@ -1295,7 +1321,7 @@ Total queued articles: <b>${count}</b>`
 
   /** A tap on an inline button. Data is "<area>:<action>:<id>". */
   private async handleCallback(cq: any): Promise<void> {
-    const telegram = new TelegramClient(this.env.TELEGRAM_BOT_TOKEN);
+    const telegram = this.tg();
     const chatId = String(cq.message?.chat?.id ?? cq.from?.id ?? "");
     if (this.env.USER_TELEGRAM_CHAT_ID && chatId !== this.env.USER_TELEGRAM_CHAT_ID) return;
     const [area, action, rawId] = String(cq.data ?? "").split(":");

@@ -13,6 +13,7 @@ function seeded(): Db {
   db.run("INSERT INTO event (ts, type, lane, source, raw) VALUES ('2026-11-05T05:00:00.000Z', 'note', 'fitness', 'telegram', 'hello')");
   db.run("INSERT INTO revision (ts, event_id, summary, op_json, diff_json) VALUES ('2026-11-05T05:00:00.000Z', 1, 'Logged 3 sets', '{}', '[]')");
   db.run("INSERT INTO interaction_logs (source, raw_content, parsed_json, created_at) VALUES ('telegram_text', 'bench 20x15', '{}', '2026-11-05 05:00:00')");
+  db.run("INSERT INTO chat_log (ts, dir, tg_message_id, text, tag) VALUES ('2026-11-05T05:00:00.000Z', 'out', 11, 'Tomorrow: Gym', 'evening_recap')");
   db.run("INSERT INTO inbox (raw, ts) VALUES ('???', '2026-11-05T05:00:00.000Z')");
   db.run("INSERT INTO day_plan (date, status, locked_by) VALUES ('2026-11-05', 'locked', 'auto')");
   db.run("INSERT INTO plan_item (date, lane, title, source, status) VALUES ('2026-11-05', 'fitness', 'Gym: Back', 'pattern', 'done')");

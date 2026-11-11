@@ -273,9 +273,9 @@ flowchart TD
   - [x] 16b.1 Baseline `live-check` cases for every phrase the shortcuts catch (gate for deleting each one).
   - [x] 16b.2 Delete duplicate shortcuts: protein, jot/progress, typed sets, exercise edits.
   - [x] 16b.3 Prompt rules and examples for short and ambiguous messages.
-  - [ ] 16b.4 `chat_log` (inbound and outbound, `reply_to_message`), one wrapped Telegram client.
-  - [ ] 16b.5 Tag the bot's messages (evening recap, plan, nudge, reminder, question).
-  - [ ] 16b.6 `buildConversation` in classify and every lane; `live-check` with context.
+  - [x] 16b.4 `chat_log` (inbound and outbound, `reply_to_message`), one wrapped Telegram client.
+  - [x] 16b.5 Tag the bot's messages (evening recap, plan, nudge, reminder, question).
+  - [x] 16b.6 `buildConversation` in classify and every lane; `live-check` with context.
   - [ ] 16b.7 `answer` intent replaces word lists and the "ok" regex.
   - [ ] 16b.8 `status` and `place` intents replace `BED_RE` / `OFFICE_RE`; wake check moves after understanding.
   - [ ] 16b.9 Confidence guards and the offline fallback.

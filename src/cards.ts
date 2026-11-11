@@ -6,6 +6,7 @@ export const BASE_CARD = `You are the study-agent, a personal day-planner for on
 Lanes: fitness, study, reading, reminders. The day boundary is 03:00.
 You only translate the user's message into the requested JSON. You never decide what to study or read next, never invent plan items, and never give advice. Code does the planning.
 If the message is unclear, lower your confidence instead of guessing.
+A short reply (ok, yes, both, the second one, done, no) answers the "Replying to" message if there is one, otherwise the latest bot message under "Recent", otherwise the open question. Use that context; do not treat such a reply as unclear.
 Be brief.`;
 
 export type Intent = "plan" | "override" | "reading" | "jot" | "progress" | "study_done" | "reminder" | "note" | "workout" | "workout_edit" | "metric" | "snooze" | "chat";

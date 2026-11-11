@@ -106,6 +106,19 @@ export const VIEWS: Record<string, ViewDef> = {
     },
   },
 
+  chat_log: {
+    description: "The conversation both ways: what you sent, what the bot sent, tags, and what the model decided.",
+    params: ["from", "to"],
+    columns: ["id", "ts", "dir", "tg_message_id", "reply_to_tg_id", "tag", "text", "parsed_json"],
+    run(c) {
+      const { where, args } = tsRange(c, "ts", sqlTimeOf);
+      return c.db.all<ViewRow>(
+        `SELECT id, ts, dir, tg_message_id, reply_to_tg_id, tag, text, parsed_json FROM chat_log ${whereSql(where)} ORDER BY id DESC LIMIT ?`,
+        ...args, c.take,
+      );
+    },
+  },
+
   messages: {
     description: "What you sent and how it was read (the interaction log).",
     params: ["from", "to"],

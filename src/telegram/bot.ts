@@ -4,7 +4,8 @@ export type Buttons = { text: string; data: string }[][];
 const keyboard = (buttons: Buttons) => ({ inline_keyboard: buttons.map((row) => row.map((b) => ({ text: b.text, callback_data: b.data }))) });
 
 export class TelegramClient {
-  constructor(private token: string) {}
+  /** `onSent` sees every message the bot sends (id, text, tag): the conversation log hangs off it. */
+  constructor(private token: string, private onSent?: (chatId: number | string, text: string, messageId: number | undefined, tag?: string) => void) {}
 
   private async call<T>(method: string, body: unknown): Promise<T> {
     const res = await fetch(`https://api.telegram.org/bot${this.token}/${method}`, {
@@ -20,13 +21,18 @@ export class TelegramClient {
   }
 
   /** Returns the sent message's id (used to edit it later, e.g. to remove buttons once tapped). */
-  async sendMessage(chatId: number | string, text: string, parseMode: "HTML" | "MarkdownV2" = "HTML", buttons?: Buttons): Promise<number | undefined> {
+  async sendMessage(chatId: number | string, text: string, parseMode: "HTML" | "MarkdownV2" = "HTML", buttons?: Buttons, tag?: string): Promise<number | undefined> {
     const msg = await this.call<{ message_id?: number } | undefined>("sendMessage", {
       chat_id: chatId,
       text,
       parse_mode: parseMode,
       ...(buttons ? { reply_markup: keyboard(buttons) } : {}),
     });
+    try {
+      this.onSent?.(chatId, text, msg?.message_id, tag);
+    } catch (e) {
+      console.warn("chat log (out) failed:", e);
+    }
     return msg?.message_id;
   }
 

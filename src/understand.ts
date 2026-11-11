@@ -45,6 +45,8 @@ export interface UnderstandDeps {
   backends: InferBackend[];
   nowMs: number;
   log?: (line: string) => void;
+  /** buildConversation() output: the replied-to message, recent messages, any open question. */
+  conversation?: string;
 }
 
 // ------------------------------------------------------------ validation helpers
@@ -474,6 +476,7 @@ export function addToInbox(db: Db, raw: string, nowMs: number): number {
 export async function understand(deps: UnderstandDeps, text: string): Promise<Outcome> {
   const { db, backends, nowMs } = deps;
   const log = deps.log ?? console.warn;
+  const convo = deps.conversation ? `${deps.conversation}\n\n` : "";
 
   try {
     const cls = await infer(
@@ -481,7 +484,7 @@ export async function understand(deps: UnderstandDeps, text: string): Promise<Ou
       {
         task: "classify",
         system: `${BASE_CARD}\n\n${CLASSIFY_CARD}`,
-        user: `${buildSnapshot(db, "chat", nowMs)}\n\nMessage: ${text}`,
+        user: `${buildSnapshot(db, "chat", nowMs)}\n\n${convo}Message: ${text}`,
         schema: CLASSIFY_SCHEMA,
         validate: (raw) => {
           const o = asObj(raw);
@@ -498,7 +501,7 @@ export async function understand(deps: UnderstandDeps, text: string): Promise<Ou
       {
         task: `extract:${cls.intent}`,
         system: `${BASE_CARD}\n\n${LANE_CARDS[cls.intent]}`,
-        user: `${buildSnapshot(db, cls.intent, nowMs)}\n\nMessage: ${text}`,
+        user: `${buildSnapshot(db, cls.intent, nowMs)}\n\n${convo}Message: ${text}`,
         schema: EXTRACT_SCHEMAS[cls.intent],
         validate: handler.validate,
       },

@@ -303,6 +303,21 @@ CREATE INDEX IF NOT EXISTS idx_jot_reading ON jot(reading_id, id);
 ALTER TABLE reading_item ADD COLUMN progress TEXT;
 `;
 
+const V9_SQL = `
+CREATE TABLE IF NOT EXISTS chat_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL,
+  dir TEXT NOT NULL CHECK(dir IN ('in','out')),
+  tg_message_id INTEGER,
+  reply_to_tg_id INTEGER,
+  text TEXT NOT NULL,
+  tag TEXT,
+  parsed_json TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_chat_log_tg ON chat_log(tg_message_id);
+CREATE INDEX IF NOT EXISTS idx_chat_log_ts ON chat_log(ts);
+`;
+
 export interface Migration {
   version: number;
   name: string;
@@ -320,6 +335,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 6, name: "fitness lane: sessions, exercises, sets, metrics", sql: V6_SQL, run: (db) => void migrateV1Workouts(db) },
   { version: 7, name: "reminders v2: tasks, repeats, follow-up", sql: V7_SQL },
   { version: 8, name: "jots and reading progress", sql: V8_SQL },
+  { version: 9, name: "chat log: both sides of the conversation", sql: V9_SQL },
 ];
 
 /** Apply any migration not yet recorded. Safe on a database that predates schema_migrations. */

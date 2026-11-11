@@ -36,6 +36,10 @@ export type Outcome =
   | { kind: "workout"; op: LogWorkoutOp; protein?: number }
   /** A reply to something the bot said. Code decides what it answers (the message tag, or the open question). */
   | { kind: "answer"; answer: Answer; confidence: number }
+  /** Going to bed or waking up. */
+  | { kind: "status"; status: "bed" | "wake" }
+  /** The coming week's office days, as weekday numbers (Mon = 0). Empty = all remote. */
+  | { kind: "office"; weekdays: number[] }
   | { kind: "snooze"; hours: number; reason: string }
   | { kind: "reply"; html: string }
   /** A question whose answer is a short reply; the agent stores the pending question (convo.ts). */
@@ -215,6 +219,8 @@ const EXTRACT_SCHEMAS: Record<Intent, JsonSchema> = {
     },
     ["kind", "ids", "name"],
   ),
+  status: S({ kind: { type: "string", enum: ["bed", "wake"] } }, ["kind"]),
+  office: S({ days: { type: "array", items: { type: "string", enum: ["mon", "tue", "wed", "thu", "fri"] } } }, ["days"]),
   snooze: S({ duration_hours: { type: "number" }, reason: { type: "string" } }, ["reason"]),
   chat: S({ reply: { type: "string" } }, ["reply"]),
 };
@@ -398,6 +404,25 @@ const LANE_HANDLERS: Record<Intent, (db: Db, nowMs: number) => { validate: (raw:
       return { kind: oneOf(o, "kind", ["affirm", "deny", "choose", "new", "name"] as const), ids, name: optStr(o, "name", 100) ?? "" };
     },
     map: (v: Answer): Outcome => ({ kind: "answer", answer: v, confidence: 1 }),
+  }),
+
+  status: () => ({
+    validate: (raw) => ({ status: oneOf(asObj(raw), "kind", ["bed", "wake"] as const) }),
+    map: (v: { status: "bed" | "wake" }): Outcome => ({ kind: "status", status: v.status }),
+  }),
+
+  office: () => ({
+    validate: (raw) => {
+      const o = asObj(raw);
+      if (!Array.isArray(o.days)) throw new ValidationError("days must be a list");
+      const days = o.days.map((d) => {
+        const i = typeof d === "string" ? ["mon", "tue", "wed", "thu", "fri"].indexOf(d.toLowerCase().slice(0, 3)) : -1;
+        if (i < 0) throw new ValidationError(`not a weekday: ${String(d)}`);
+        return i;
+      });
+      return { weekdays: [...new Set(days)].sort() };
+    },
+    map: (v: { weekdays: number[] }): Outcome => ({ kind: "office", weekdays: v.weekdays }),
   }),
 
   note: () => ({

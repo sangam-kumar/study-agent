@@ -308,9 +308,6 @@ export function resolvePlanItem(db: Db, ref: string, dates: string[], statuses: 
 
 const DAY_PREFIX = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 
-/** "office tue thu", "in office monday and wednesday", "I'm in the office on Tue": group 1 is the days. */
-export const OFFICE_RE = /^(?:i'?m\s+|i am\s+)?(?:in\s+(?:the\s+)?)?(?:office|wfo)(?:\s+days?)?(?:\s+on)?[\s:]+(.+)$/i;
-
 /** "tue thu", "Tuesday and Thursday", "mon, wed" -> [1, 3]. null if a word isn't a weekday or nothing is named. */
 export function parseWeekdays(text: string): number[] | null {
   const words = text.toLowerCase().split(/[\s,&/+]+/).filter((w) => w && !["and", "on", "days", "day"].includes(w));
@@ -350,9 +347,6 @@ export function lastWeeksOfficeDays(db: Db, today: string): number[] {
 export const weekdayNames = (days: number[]) => days.map((d) => ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][d]).join(", ");
 
 // ------------------------------------------------------------------------ sleep
-
-/** "sleeping", "good night", "gn", "off to bed"... A bedtime needs no model. */
-export const BED_RE = /^(sleeping|going to (bed|sleep)|off to (bed|sleep)|heading to bed|good ?night|gn|nite|night night|bed ?time|to bed)[.!]*$/i;
 
 const MIN_SLEEP_H = 2;
 const MAX_SLEEP_H = 14;

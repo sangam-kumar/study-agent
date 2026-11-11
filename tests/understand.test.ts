@@ -310,3 +310,14 @@ test("answer: the meaning is mapped, ids outside 1-20 are dropped, and the class
   const junk = await run(db, model("answer", 0.9, { kind: "maybe", ids: [], name: "" }), "hmm");
   assert.equal(junk.kind, "inbox");
 });
+
+test("status and office: bedtime, wake, and office weekdays become outcomes; bad days are rejected", async () => {
+  const db = world();
+  assert.deepEqual(await run(db, model("status", 0.9, { kind: "bed" }), "gn"), { kind: "status", status: "bed" });
+  assert.deepEqual(await run(db, model("status", 0.9, { kind: "wake" }), "good morning"), { kind: "status", status: "wake" });
+  assert.equal((await run(db, model("status", 0.9, { kind: "nap" }), "zzz")).kind, "inbox");
+
+  assert.deepEqual(await run(db, model("office", 0.9, { days: ["Tue", "thu", "tue"] }), "office tue thu"), { kind: "office", weekdays: [1, 3] });
+  assert.deepEqual(await run(db, model("office", 0.9, { days: [] }), "working from home all week"), { kind: "office", weekdays: [] });
+  assert.equal((await run(db, model("office", 0.9, { days: ["someday"] }), "office someday")).kind, "inbox");
+});

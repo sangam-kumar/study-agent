@@ -25,7 +25,7 @@ import type { ViewResult } from "./views.ts";
 import { loadConfigSeed } from "./seed-config.ts";
 import { loadReadingSeed } from "./seed-reading.ts";
 import {
-  BED_RE, OFFICE_RE, ensureDraft, eventExists, formatHours, getConfig, lastWeeksOfficeDays, loadDayRow, loadItems, lockDay,
+  ensureDraft, eventExists, formatHours, getConfig, lastWeeksOfficeDays, loadDayRow, loadItems, lockDay,
   officeWindow, parseWeekdays, recordEvent, renderDayBlock, renderEvening, renderMorning, renderPlan, sleepNights,
   weekdayNames,
 } from "./day.ts";
@@ -360,8 +360,10 @@ export class StudyAgent extends Agent<Env> {
     try {
       // The first message of the morning is the wake signal: it delivers today's plan.
       const raw = typeof message.text === "string" ? (message.text as string).trim() : "";
-      if (message.voice || (raw && (!raw.startsWith("/") || /^\/up\b/i.test(raw)))) {
-        if (await this.noteWake(telegram, chatId, raw)) return;
+      // "/up" is an explicit wake. Any other first message of the morning is a wake too, but only once the
+      // model has said it is not a bedtime (see handleNaturalLanguage).
+      if (/^\/up\b/i.test(raw)) {
+        if (await this.noteWake(telegram, chatId, "wake_word")) return;
       }
 
       if (message.voice) {
@@ -383,6 +385,7 @@ export class StudyAgent extends Agent<Env> {
           this.logInbound(text, message);
           await this.handleCommand(telegram, chatId, text);
         } else if (text.startsWith("http://") || text.startsWith("https://")) {
+          await this.noteWake(telegram, chatId, "first_message");
           this.addToReadingQueue(text);
           this.logInteraction("telegram_text", text, { type: "url", url: text });
           const count = this.getStats().queuedReading;
@@ -411,31 +414,31 @@ Total queued articles: <b>${count}</b>`
     const today = dayKey(nowMs);
     const tomorrow = addDays(today, 1);
 
-    // "sleeping" / "good night": a bedtime. No model needed.
-    if (BED_RE.test(text.trim())) {
-      recordEvent(db, "bed", today, {}, nowMs);
-      const wakeBy = loadDayRow(db, tomorrow)?.wake_by;
-      const until = wakeBy ? istWallToMs(tomorrow, wakeBy) : null;
-      const hint = until && until > nowMs ? ` Up by ${wakeBy} — that's ${formatHours((until - nowMs) / 3_600_000)} from now.` : "";
-      await telegram.sendMessage(chatId, `🌙 Good night.${hint}`);
-      return;
-    }
-
-    // "office tue thu" / "in office monday and wednesday": the coming week's office days.
-    const office = OFFICE_RE.exec(text.trim());
-    const officeDays = office ? parseWeekdays(office[1]) : null;
-    if (officeDays) {
-      await telegram.sendMessage(chatId, this.applyOfficeDays(officeDays));
-      return;
-    }
-
     const started = Date.now();
     const conversation = buildConversation(db, nowMs, { replyTo: turn.replyTo, excludeLogId: turn.logId });
     const outcome = await understand({ db, backends: buildBackends(this.env), nowMs, conversation }, text);
     if (turn.logId !== null) noteOutcome(db, turn.logId, { outcome: outcome.kind, ms: Date.now() - started });
     const heard = source === "telegram_voice" ? `\n\n<i>Heard: "${escapeHtml(text)}"</i>` : "";
 
+    // The first message of the morning is the wake signal, unless it is a bedtime. Done before replying, so the plan comes first.
+    if (!(outcome.kind === "status" && outcome.status === "bed")) {
+      if (await this.noteWake(telegram, chatId, outcome.kind === "status" ? "wake_word" : "first_message")) return;
+    }
+
     switch (outcome.kind) {
+      case "status": {
+        // A wake was handled by noteWake above (it sent the morning brief or said good morning).
+        if (outcome.status === "wake") return;
+        recordEvent(db, "bed", today, {}, nowMs);
+        const wakeBy = loadDayRow(db, tomorrow)?.wake_by;
+        const until = wakeBy ? istWallToMs(tomorrow, wakeBy) : null;
+        const hint = until && until > nowMs ? ` Up by ${wakeBy} — that's ${formatHours((until - nowMs) / 3_600_000)} from now.` : "";
+        await telegram.sendMessage(chatId, `🌙 Good night.${hint}`);
+        return;
+      }
+      case "office":
+        await telegram.sendMessage(chatId, this.applyOfficeDays(outcome.weekdays));
+        return;
       case "ops": {
         const body = this.runOps(outcome.ops, text, outcome.affects);
         // After a workout fix, show the session as it now stands.
@@ -660,13 +663,11 @@ Total queued articles: <b>${count}</b>`
   }
 
   /** Records the day's wake and sends the morning brief if it hasn't gone out. True if the message was only a wake word. */
-  private async noteWake(telegram: TelegramClient, chatId: string, text: string): Promise<boolean> {
+  private async noteWake(telegram: TelegramClient, chatId: string, trigger: "wake_word" | "first_message"): Promise<boolean> {
     const db = doDb(this.ctx);
     const nowMs = Date.now();
     const today = dayKey(nowMs);
-    const wakeWord = /^\/?(up|awake|gm|good morning|morning)[.!]?$/i.test(text);
-    // A bedtime is never a wake-up, even if it's the first message of the day.
-    if (BED_RE.test(text.trim())) return false;
+    const wakeWord = trigger === "wake_word";
     // Before ~04:30 a message is more likely a late night than a wake-up.
     const earliest = istWallToMs(today, getConfig(db, "wake_earliest", "04:30"));
     if (nowMs < earliest && !wakeWord) return false;

@@ -210,7 +210,7 @@ test("locking a day that only has a place set drafts it first", () => {
 
 // ---------------------------------------------------------------- Phase 11
 
-import { BED_RE, lastWeeksOfficeDays, officeWindow, parseWeekdays, sleepNights, formatHours } from "../src/day.ts";
+import { lastWeeksOfficeDays, officeWindow, parseWeekdays, sleepNights, formatHours } from "../src/day.ts";
 import { recordEvent } from "../src/day.ts";
 
 test("weekday parsing for office days", () => {
@@ -289,23 +289,4 @@ test("the morning shows last night; the evening flags a low weekly average only"
   assert.match(renderMorning(db, TUE), /slept 5 h 30 min/);
   ensureDraft(db, TUE, at(TUE, "21:30"), { force: true });
   assert.match(renderEvening(db, TUE), /sleep 5\.3 h a night \(aim 7\+\)/);
-});
-
-test("bedtime phrases", () => {
-  for (const s of ["sleeping", "Good night", "goodnight!", "gn", "going to bed", "off to sleep"]) assert.ok(BED_RE.test(s), s);
-  for (const s of ["sleeping bag on amazon", "I slept badly", "night shift tomorrow"]) assert.ok(!BED_RE.test(s), s);
-});
-
-test("office-day phrases are caught in code; anything else goes to the model", async () => {
-  const { OFFICE_RE } = await import("../src/day.ts");
-  const days = (s: string) => {
-    const m = OFFICE_RE.exec(s);
-    return m ? parseWeekdays(m[1]) : null;
-  };
-  assert.deepEqual(days("office tue thu"), [1, 3]);
-  assert.deepEqual(days("in office monday and wednesday"), [0, 2]);
-  assert.deepEqual(days("I'm in the office on Tue"), [1]);
-  assert.deepEqual(days("wfo: thu, fri"), [3, 4]);
-  assert.equal(days("in office tomorrow"), null, "not weekday names: left to the model");
-  assert.equal(days("add office party on friday"), null);
 });

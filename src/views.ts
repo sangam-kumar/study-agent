@@ -283,6 +283,19 @@ export const VIEWS: Record<string, ViewDef> = {
     },
   },
 
+  feedback: {
+    description: "Messages about the agent itself (bugs, ideas, requests) and whether they are open or done.",
+    params: ["from", "to"],
+    columns: ["id", "date", "kind", "status", "text", "ts"],
+    run(c) {
+      const { where, args } = tsRange(c, "ts", sqlTimeOf);
+      return c.db.all<ViewRow>(
+        `SELECT id, date, kind, status, text, ts FROM feedback ${whereSql(where)} ORDER BY id DESC LIMIT ?`,
+        ...args, c.take,
+      );
+    },
+  },
+
   notes: {
     description: "Short-lived notes the agent keeps as context, with their expiry.",
     params: [],

@@ -51,6 +51,9 @@ export type Op =
   | { type: "revoke_override"; override_id: number }
   | { type: "add_note"; lane?: Lane; text: string; ttl_days: number }
   | { type: "resolve_note"; note_id: number }
+  /** A message about the agent itself (bug, idea, request): kept, listed by /feedback, written to the daily note. */
+  | { type: "add_feedback"; date: string; kind: "bug" | "idea" | "other"; text: string }
+  | { type: "set_feedback_status"; feedback_id: number; status: "open" | "done" }
   | { type: "advance_pointer"; list_id: string; to_ordinal?: number }
   | { type: "set_config"; key: string; value: string }
   | { type: "set_place"; dates: string[]; place: "OFFICE" | "REMOTE" }
@@ -210,6 +213,10 @@ export function validateOp(input: unknown): Op {
       };
     case "resolve_note":
       return { type: "resolve_note", note_id: int(o, "note_id", 1) };
+    case "add_feedback":
+      return { type: "add_feedback", date: date(o, "date"), kind: oneOf(o, "kind", ["bug", "idea", "other"] as const), text: str(o, "text", 1000) };
+    case "set_feedback_status":
+      return { type: "set_feedback_status", feedback_id: int(o, "feedback_id", 1), status: oneOf(o, "status", ["open", "done"] as const) };
     case "advance_pointer":
       return { type: "advance_pointer", list_id: str(o, "list_id", 100), to_ordinal: optInt(o, "to_ordinal", 1) };
     case "set_config":
@@ -584,7 +591,7 @@ const HANDLERS: { [K in Op["type"]]: (h: HandlerCtx, op: Extract<Op, { type: K }
       created_at: iso(h.now),
       expires_at: iso(expires),
     });
-    return { lane: op.lane, refId: id, summary: `Noted for ${op.ttl_days}d: ${op.text}` };
+    return { lane: op.lane, refId: id, summary: `Remembered for ${op.ttl_days} day${op.ttl_days === 1 ? "" : "s"} (not written to your notes): ${op.text}` };
   },
 
   resolve_note(h, op) {
@@ -605,6 +612,19 @@ const HANDLERS: { [K in Op["type"]]: (h: HandlerCtx, op: Extract<Op, { type: K }
     else h.rec.insert("pointer", { list_id: op.list_id, ordinal: target, updated_at: iso(h.now) }, "list_id");
     const finished = target === count + 1;
     return { lane: "study", refId: op.list_id, summary: finished ? `${op.list_id}: finished` : `${op.list_id}: now at ${target}/${count}` };
+  },
+
+  add_feedback(h, op) {
+    const id = h.rec.insert("feedback", { ts: iso(h.now), date: op.date, kind: op.kind, text: op.text, status: "open" });
+    const short = op.text.length > 70 ? `${op.text.slice(0, 69)}…` : op.text;
+    return { refId: id, summary: `Saved as feedback #${id} (${op.kind}): ${short}. It is in /feedback and in the daily note for ${op.date}.` };
+  },
+
+  set_feedback_status(h, op) {
+    const cur = h.rec.get("feedback", op.feedback_id);
+    if (!cur) throw new OpError(`No feedback #${op.feedback_id}. /feedback lists them.`);
+    h.rec.update("feedback", op.feedback_id, { status: op.status });
+    return { refId: op.feedback_id, summary: `Feedback #${op.feedback_id} marked ${op.status}` };
   },
 
   set_config(h, op) {

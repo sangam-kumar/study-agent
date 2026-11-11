@@ -890,7 +890,7 @@ Total queued articles: <b>${count}</b>`
           "• When I ask \"which one?\", just answer: <i>both</i>, <i>1</i>, <i>the second</i>, <i>neither</i>.",
           "• <code>/gym</code> - This week (lifts, mobility, protein) and the last session · <code>/gym yesterday</code>",
           "• <code>/lift bench</code> - Last few times and your best set",
-          "• <i>protein 110</i> or <code>/protein 110</code> - Today's protein (I ask in the evening)",
+          "• Protein adds up through the day: <i>whey</i> · <i>two scoops of whey</i> · <i>soy chunks</i> · <i>protein 26</i>. <i>protein total 90</i> sets the total; <i>whey is 30 g now</i> changes a preset. I show the running total against your 90–120 g. <code>/protein</code> lists today and the presets (<code>/protein 26</code> adds, <code>/protein total 90</code> sets).",
           "",
           "📚 <b>Study &amp; reading</b>",
           "• <code>/tracks</code> - Where each study track is",
@@ -903,6 +903,7 @@ Total queued articles: <b>${count}</b>`
           "• When one fires: ✅ Done · ⏰ 1h · 📅 Tomorrow. No answer → one repeat after 30 min, then it's in the evening recap.",
           "• <code>/reminders</code> · <code>/done &lt;id&gt;</code> · <code>/cancel &lt;id&gt;</code> (or <i>cancel the bank reminder</i>) · <code>/remind &lt;minutes&gt; &lt;text&gt;</code>",
           "• <code>/inbox</code> - Messages I wasn't sure about (<code>/inbox done &lt;id&gt;</code>)",
+          "• Tell me about the agent itself — <i>bug: …</i>, <i>idea: …</i>, <i>note for the dev: …</i> — and it is saved as feedback, listed by <code>/feedback</code> (<code>/feedback done &lt;id&gt;</code>) and written into that day's note. A plain note (<i>knee hurts, go easy on legs</i>) is only remembered for a few days.",
           "• <code>/snooze &lt;hours&gt;</code> · <code>/unsnooze</code> - Pause my messages (your reminders still fire)",
           "• <code>/week</code> - The week so far (Sunday's evening message has the full one) · <code>/nudges</code> - What I send on my own, <code>/nudges off</code>",
           "• <code>/jobs</code> · <code>/testcue evening|lock|morning|nudge</code> · <code>/status</code> · <code>/queue</code> · <code>/recent</code>",
@@ -918,6 +919,27 @@ Total queued articles: <b>${count}</b>`
           "If I'm unsure I save it to /inbox and change nothing. If I can't reach the AI I say so; the slash commands above still work. Send a URL to queue it.",
         ].join("\n");
         await telegram.sendMessage(chatId, helpMessage);
+        break;
+      }
+
+      case "/feedback": {
+        const db = doDb(this.ctx);
+        if ((args[0] ?? "").toLowerCase() === "done") {
+          const id = parseInt(args[1] ?? "", 10);
+          if (isNaN(id)) {
+            await telegram.sendMessage(chatId, "Usage: <code>/feedback done &lt;id&gt;</code> (see /feedback for ids)");
+            break;
+          }
+          await telegram.sendMessage(chatId, this.runOps([{ type: "set_feedback_status", feedback_id: id, status: "done" }], commandText));
+          break;
+        }
+        const open = db.all<{ id: number; date: string; kind: string; text: string }>("SELECT id, date, kind, text FROM feedback WHERE status = 'open' ORDER BY id DESC LIMIT 30");
+        if (open.length === 0) {
+          await telegram.sendMessage(chatId, "📮 No open feedback. Say e.g. <i>note for the dev: …</i> or <i>bug: …</i>.");
+          break;
+        }
+        const rows = open.map((f) => `#${f.id} · ${f.kind} · ${dateLabel(f.date)}` + NL + escapeHtml(f.text.length > 300 ? `${f.text.slice(0, 299)}…` : f.text));
+        await telegram.sendMessage(chatId, `📮 <b>Open feedback</b>` + NL + NL + rows.join(NL + NL) + NL + NL + "<i>/feedback done &lt;id&gt; when it is dealt with</i>");
         break;
       }
 

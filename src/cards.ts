@@ -9,8 +9,8 @@ If the message is unclear, lower your confidence instead of guessing.
 A short reply (ok, yes, both, the second one, done, no) answers the "Replying to" message if there is one, otherwise the latest bot message under "Recent", otherwise the open question. Use that context; do not treat such a reply as unclear.
 Be brief.`;
 
-export type Intent = "plan" | "override" | "reading" | "jot" | "progress" | "study_done" | "reminder" | "note" | "workout" | "workout_edit" | "metric" | "answer" | "status" | "office" | "snooze" | "chat";
-export const INTENTS: readonly Intent[] = ["plan", "override", "reading", "jot", "progress", "study_done", "reminder", "note", "workout", "workout_edit", "metric", "answer", "status", "office", "snooze", "chat"];
+export type Intent = "plan" | "override" | "reading" | "jot" | "progress" | "study_done" | "reminder" | "note" | "workout" | "workout_edit" | "metric" | "answer" | "status" | "office" | "feedback" | "snooze" | "chat";
+export const INTENTS: readonly Intent[] = ["plan", "override", "reading", "jot", "progress", "study_done", "reminder", "note", "workout", "workout_edit", "metric", "answer", "status", "office", "feedback", "snooze", "chat"];
 
 export const CLASSIFY_CARD = `Classify the message into exactly one intent:
 - plan: mark an item of today's or tomorrow's plan done or skipped, add a task to a day, or move an item to another day ("done with gym", "skip reading today", "add call mom tomorrow", "move DSA to Saturday").
@@ -20,7 +20,8 @@ export const CLASSIFY_CARD = `Classify the message into exactly one intent:
 - progress: a chapter or page reached in a book ("finished chapter 3 of DDIA", "on page 140 of SICP"). Pausing, finishing or dropping the whole book is reading.
 - study_done: finished study work that is NOT simply today's planned item (e.g. "did 3 DSA problems").
 - reminder: remind me / alert me at a time or after a delay, a task due by a day, a repeating reminder, or cancelling one.
-- note: a short thing to remember for a few days ("my knee hurts, go easy on legs").
+- note: a short thing about the user's own life to remember for a few days ("my knee hurts, go easy on legs").
+- feedback: a message about the agent itself: a bug, an idea, a complaint or a request for it ("note for the dev: ...", "the agent duplicated my sets", "idea: let me add presets", "bug: ..."). Not a note about the user's own life.
 - workout: exercises with sets/reps/weights to log, including a corrected list of sets for exercises already logged today. Any message that contains sets, reps or weights is a workout, even if it also says "done with shoulders" or mentions protein.
 - workout_edit: fix one thing already logged: rename an exercise, change one set, or remove an exercise ("face full should be face pull", "set 2 of bench was 10 reps", "remove calves", "that wasn't squats, it was leg press").
 - metric: protein. Adding some ("protein 26", "had 30 g protein", "whey", "two scoops of whey", "soy chunks"), giving the day's total ("protein total 90"), or changing what a named amount is ("whey is 30 g now"). Not an exercise log.
@@ -86,6 +87,8 @@ Presets and today's total are listed below. date: only when a past day was named
 
   answer: `A reply to the bot. kind: affirm (ok, yes, sure, looks good, lock it) | deny (no, neither, never mind, leave it) | choose (picks from the numbered options of the open question: ids = their numbers, "both" or "all" = every number, "the second" = [2]) | new (keep what I said as a new exercise) | name (offers a name as the answer: put it in name).
 ids: only for choose, else empty. name: only for name, else empty.`,
+
+  feedback: `Feedback about the agent. kind: bug (it did something wrong), idea (something it could do) or other. text: what the user said, tidied into one or two plain sentences; keep the details (what was sent, what happened).`,
 
   status: `kind: bed (going to sleep) or wake (just got up).`,
 

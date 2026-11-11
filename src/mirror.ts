@@ -60,8 +60,18 @@ export function renderDailyBlock(db: Db, date: string): string | null {
 
   return [
     BLOCK_START, `## Plan — ${dateLabel(date)}`, `_${meta.join(" · ")}_`, "", ...(lines.length ? lines : ["- Nothing planned."]),
-    ...sessionMarkdown(db, date), ...(weekdayIndex(date) === 6 ? weeklyMarkdown(db, date) : []), BLOCK_END,
+    ...sessionMarkdown(db, date), ...feedbackMarkdown(db, date), ...(weekdayIndex(date) === 6 ? weeklyMarkdown(db, date) : []), BLOCK_END,
   ].join("\n");
+}
+
+/** The day's feedback about the agent, so it shows up where you look for the day. */
+function feedbackMarkdown(db: Db, date: string): string[] {
+  const rows = db.all<{ id: number; kind: string; status: string; text: string }>(
+    "SELECT id, kind, status, text FROM feedback WHERE date = ? ORDER BY id", date,
+  );
+  if (rows.length === 0) return [];
+  const one = (t: string) => t.replace(/\s+/g, " ").trim();
+  return ["", "### Agent feedback", ...rows.map((r) => `- ${r.status === "done" ? "[x]" : "[ ]"} #${r.id} (${r.kind}) ${one(r.text)}`)];
 }
 
 /** Puts the block into a note: replaces the old block, or adds it under the title, or starts a new note. */

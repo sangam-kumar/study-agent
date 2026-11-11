@@ -182,6 +182,12 @@ const cases: Case[] = [
   { group: "metric", text: "soy chunks", expect: "add 50 (soy chunks preset)", check: isOp("log_metric", { value: 50, mode: "add" }) },
   { group: "metric", text: "protein total 90", expect: "set the total to 90", check: isOp("log_metric", { value: 90, mode: "set" }) },
   { group: "metric", text: "whey is 30 g now", expect: "set_config presets", check: isOp("set_config", { key: "protein.presets" }) },
+  // feedback vs note (Phase 17)
+  { group: "feedback", text: "Note for today, the agent is duplicating the sets when the protein is updated across the day", expect: "feedback bug", check: isOp("add_feedback", { kind: "bug" }) },
+  { group: "feedback", text: "idea: let me set my own protein presets", expect: "feedback idea", check: isOp("add_feedback", { kind: "idea" }) },
+  { group: "feedback", text: "note for the dev: the evening message came twice", expect: "feedback (bug or other)", check: (o) => op1(o).type === "add_feedback" },
+  { group: "feedback", text: "it would be nice if you showed my protein in the weekly summary", expect: "feedback idea", check: (o) => op1(o).type === "add_feedback" },
+  { group: "feedback", text: "my left shoulder is sore, go easy on pressing this week", expect: "a note about me, not feedback", check: isOp("add_note") },
   { group: "snooze", text: "pause your messages for 3 hours, I'm in a meeting", expect: "snooze 3h", check: (o) => o.kind === "snooze" && o.hours === 3 },
   { group: "chat", text: "hey how's it going", expect: "a reply, nothing changed", check: (o) => o.kind === "reply" },
   { group: "chat", text: "Today's workout\nLegs/Shoulders", expect: "a reply asking for the sets, not the inbox", check: (o) => o.kind === "reply" && /set/i.test(o.html) },

@@ -223,6 +223,7 @@ const EXTRACT_SCHEMAS: Record<Intent, JsonSchema> = {
     },
     ["kind", "ids", "name"],
   ),
+  feedback: S({ kind: { type: "string", enum: ["bug", "idea", "other"] }, text: { type: "string" } }, ["kind", "text"]),
   status: S({ kind: { type: "string", enum: ["bed", "wake"] } }, ["kind"]),
   office: S({ days: { type: "array", items: { type: "string", enum: ["mon", "tue", "wed", "thu", "fri"] } } }, ["days"]),
   snooze: S({ duration_hours: { type: "number" }, reason: { type: "string" } }, ["reason"]),
@@ -433,6 +434,17 @@ const LANE_HANDLERS: Record<Intent, (db: Db, nowMs: number) => { validate: (raw:
       return { kind: oneOf(o, "kind", ["affirm", "deny", "choose", "new", "name"] as const), ids, name: optStr(o, "name", 100) ?? "" };
     },
     map: (v: Answer): Outcome => ({ kind: "answer", answer: v, confidence: 1 }),
+  }),
+
+  feedback: (_db, nowMs) => ({
+    validate: (raw) => {
+      const o = asObj(raw);
+      return { kind: oneOf(o, "kind", ["bug", "idea", "other"] as const), text: str(o, "text", 1000) };
+    },
+    map: (v: { kind: "bug" | "idea" | "other"; text: string }): Outcome => ({
+      kind: "ops",
+      ops: [{ type: "add_feedback", date: dayKey(nowMs), kind: v.kind, text: v.text }],
+    }),
   }),
 
   status: () => ({

@@ -67,9 +67,9 @@ Each ends with typecheck, test typecheck and tests green, and its own commit.
 
 - [x] **17.1 Protein entries and add/set.** Migration 10 (`protein_entry`, `feedback`), `log_metric` `mode`/`label`, handler, band-aware reply, undo; tests.
 - [x] **17.2 Presets and the `metric` intent.** `protein.presets` config, snapshot line, `metric` schema (`action`, `value`, `label`, `count`), `set_preset`; the workout lane's `protein_g` becomes an add; tests and live-check.
-- [ ] **17.3 Commands and the evening line (P-2).** `/protein` add / total / list; conditional evening line; tests.
-- [ ] **17.4 Feedback.** `feedback` intent, `add_feedback` op, `/feedback`, view, daily-note section, note reply wording; tests and live-check.
-- [ ] **17.5 Docs.** `/help`, this doc, plan, backlog statuses (B4, B5, P-1, P-2).
+- [x] **17.3 Commands and the evening line (P-2).** `/protein` add / total / list; conditional evening line; tests.
+- [x] **17.4 Feedback.** `feedback` intent, `add_feedback` op, `/feedback`, view, daily-note section, note reply wording; tests and live-check.
+- [x] **17.5 Docs.** `/help`, this doc, plan, backlog statuses (B4, B5, P-1, P-2).
 
 ## 4. Risks
 
@@ -88,3 +88,14 @@ npm run live-check -- --only metric,feedback,note
 ```
 
 After deploy: `whey` → 26 / 90; `whey` again → 52; `protein total 90`; `/undo` back to 52; `/protein` shows entries; `whey is 30 g now`, then `whey`; say "Note for today, the agent is duplicating sets" → saved as feedback and visible in `/feedback` and the next mirror of the daily note; "knee hurts, go easy on legs" → remembered for 7 days (not saved to notes).
+
+## 6. Where the build differs
+
+* **Reply wording:** protein replies come through the common "✅ …" line, e.g. `✅ whey +26 → 52 / 90 g`, followed by `/undo to reverse`, not a separate `🥩` format. `/protein` itself uses `🥩`.
+* **`value` vs `count`:** a number the user said is the total grams for that message and wins; `count` only multiplies a preset. The model never adds ("two scoops of whey" is `label whey, count 2`, code makes 52).
+* **Bare numbers add.** The first live run read `protein 110` and `had about 95g protein today` as totals; the card now says a bare number, even with "today", always adds, and only total / so far / make it / set it to means set. Both pass live.
+* **The workout lane's `protein_g`** (a protein mention inside a workout message) is also an add.
+* **Unknown food** ("dal") is not guessed: the agent asks for grams and shows the known presets. Estimating from a food description stays P-3.
+* **Reset:** `protein_entry` clears with the `workouts` scope; `feedback` with `plan`.
+* **Feedback is dated by the day it was said** and shows in that day's note only if the day has a plan row (it normally does).
+* **Verified live (Gemini flash-lite):** `protein 26`, `whey`, `two scoops of whey`, `soy chunks`, `protein total 90`, `whey is 30 g now`, and five feedback-versus-note phrases, including the sentence that started this phase. Several runs hit the free-tier "AI unavailable" limit and were repeated slower.

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { GitHubClient } from "../src/github/client.ts";
-import { applyOp } from "../src/ops.ts";
+import { applyOp, undoLast } from "../src/ops.ts";
 import { ensureDraft, loadItems, lockDay } from "../src/day.ts";
 import { BLOCK_END, dailyPath, mergeIntoNote, mirrorDays, renderDailyBlock } from "../src/mirror.ts";
 import { loadConfigSeed } from "../src/seed-config.ts";
@@ -190,4 +190,31 @@ test("mirror: a failed commit records nothing, so the next run retries", async (
   const r = await mirrorDays(db, client, [MON], nowMs);
   assert.equal(r.committed, true);
   assert.equal(state.commitsMade, 1);
+});
+
+// ------------------------------------------------------------------ feedback (Phase 17)
+
+import { readView } from "../src/views.ts";
+
+test("feedback: saved with an id, shown in the day's block, listed by the view, done and undo work", () => {
+  const db = migratedDb();
+  loadStudySeed(db, { tracks: [{ id: "t", title: "T", lane: "study", lists: [{ id: "l", title: "L", units: [{ ordinal: 1, title: "x" }] }] }] }, () => new Date("2026-11-09T05:00:00Z"));
+  applyOp(db, { type: "add_item", date: "2026-11-09", lane: "study", title: "DSA" }, { now: () => new Date("2026-11-09T05:00:00Z") });
+  const r = applyOp(db, { type: "add_feedback", date: "2026-11-09", kind: "bug", text: "Duplicated\nthe sets   on protein" }, { now: () => new Date("2026-11-09T06:00:00Z") });
+  assert.match(r.summary, /^Saved as feedback #1 \(bug\): Duplicated/);
+
+  assert.match(renderDailyBlock(db, "2026-11-09")!, /### Agent feedback\n- \[ \] #1 \(bug\) Duplicated the sets on protein/);
+  assert.equal(readView(db, "feedback", {}, Date.parse("2026-11-09T07:00:00Z")).rows[0].text, "Duplicated\nthe sets   on protein");
+
+  applyOp(db, { type: "set_feedback_status", feedback_id: 1, status: "done" }, { now: () => new Date("2026-11-09T08:00:00Z") });
+  assert.match(renderDailyBlock(db, "2026-11-09")!, /- \[x\] #1/);
+  undoLast(db);
+  assert.match(renderDailyBlock(db, "2026-11-09")!, /- \[ \] #1/);
+  assert.throws(() => applyOp(db, { type: "set_feedback_status", feedback_id: 99, status: "done" }, { now: () => new Date() }), /No feedback #99/);
+});
+
+test("ordinary notes say they are not written to your notes", () => {
+  const db = migratedDb();
+  const r = applyOp(db, { type: "add_note", text: "knee hurts", ttl_days: 7 }, { now: () => new Date("2026-11-09T06:00:00Z") });
+  assert.equal(r.summary, "Remembered for 7 days (not written to your notes): knee hurts");
 });

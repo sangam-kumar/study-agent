@@ -356,3 +356,11 @@ test("a message nobody could read is not reported as an outage", async () => {
   assert.equal(unclear.kind, "inbox");
   assert.equal(unclear.kind === "inbox" && unclear.down, undefined);
 });
+
+test("feedback: a message about the agent becomes an add_feedback op for today", async () => {
+  const db = world();
+  const out = await run(db, model("feedback", 0.9, { kind: "bug", text: "The agent duplicated my sets when I updated protein." }), "Note for today, the agent is duplicating the sets");
+  assert.deepEqual(out, { kind: "ops", ops: [{ type: "add_feedback", date: "2026-10-30", kind: "bug", text: "The agent duplicated my sets when I updated protein." }] });
+  assert.equal((await run(db, model("feedback", 0.9, { kind: "rant", text: "x" }), "x")).kind, "inbox");
+  assert.equal((await run(db, model("feedback", 0.9, { kind: "idea", text: "" }), "idea:")).kind, "inbox", "empty feedback is not saved");
+});

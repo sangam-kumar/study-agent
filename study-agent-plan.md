@@ -288,9 +288,9 @@ flowchart TD
 * **Sub-steps:**
   - [x] 17.1 Protein entries and add/set (`protein_entry`, `feedback` tables; `log_metric` mode and label; band-aware reply; undo).
   - [x] 17.2 Presets and the `metric` intent (whey 26, soy chunks 50, editable; the model returns label and count, code resolves grams).
-  - [ ] 17.3 `/protein` add / total / list; conditional evening line (P-2).
-  - [ ] 17.4 `feedback` intent, `add_feedback`, `/feedback`, daily-note section, honest wording for ordinary notes (B4).
-  - [ ] 17.5 `/help`, docs, backlog statuses.
+  - [x] 17.3 `/protein` add / total / list; conditional evening line (P-2).
+  - [x] 17.4 `feedback` intent, `add_feedback`, `/feedback`, daily-note section, honest wording for ordinary notes (B4).
+  - [x] 17.5 `/help`, docs, backlog statuses.
 * **Check:** the walk-through at the end of the phase doc.
 
 ### Phase 18: Fitness coverage model [F1–F5]

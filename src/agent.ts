@@ -38,7 +38,7 @@ import {
 import { GitHubClient } from "./github/client.ts";
 import { mirrorDays } from "./mirror.ts";
 import {
-  closeOpenSessions, diffSessions, importGymLog, loadSession, parseChatWorkout, parseExerciseEdit, parseWorkoutAnnouncement, parseProtein, reconcileWorkout, renameInOp,
+  closeOpenSessions, diffSessions, importGymLog, loadSession, parseChatWorkout, parseExerciseEdit, parseProtein, reconcileWorkout, renameInOp,
   renderGymWeek, renderLiftHistory, renderSession, unsureNames,
 } from "./fitness.ts";
 import { findExercise, loadCatalog, matchExercise, suggestExercise } from "./exercises.ts";
@@ -451,14 +451,6 @@ Total queued articles: <b>${count}</b>`
     if (edit) {
       const reply = this.runOps([edit], text);
       await telegram.sendMessage(chatId, reply.includes("✅") ? `${reply}\n\n${renderSession(db, today)}` : reply);
-      return;
-    }
-
-    // "Today's workout: Legs/Shoulders": a heads-up before any sets. Acknowledge, change nothing.
-    const focus = parseWorkoutAnnouncement(text);
-    if (focus) {
-      const done = loadSession(db, today)?.exercises.length ?? 0;
-      await telegram.sendMessage(chatId, `💪 ${escapeHtml(focus)} today. Send the sets when you have them, one exercise per line, e.g. <code>squat 60x10, 60x10, 60x8</code>. The day's gym item follows what you log.${done ? `\n\n${renderSession(db, today)}` : ""}`);
       return;
     }
 

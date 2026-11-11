@@ -254,19 +254,6 @@ const toInput = (s: SetEntry) => ({
  * A first line "yesterday" logs to yesterday. Returns null unless the whole message reads as sets,
  * and each exercise is either known or has an unmistakable set ("20x15"), so "call mom 2" never matches.
  */
-/**
- * "Today's workout, then Legs/Shoulders" or "workout today: back and biceps": what you are about to train,
- * said before any sets. Returns the focus text, or null when it is anything else (digits mean sets).
- */
-export function parseWorkoutAnnouncement(text: string): string | null {
-  const t = text.trim();
-  const m = /^(?:(?:today'?s?|todays)\s+(?:workout|gym|session|training|lift)|(?:workout|gym|session|training|lift)\s+today)\s*[:\-–—,]?\s*([\s\S]*)$/i.exec(t);
-  if (!m) return null;
-  const focus = m[1].replace(/\s+/g, " ").trim().replace(/[.!]+$/, "");
-  if (!focus || focus.length > 60 || /\d/.test(focus) || focus.split(" ").length > 7) return null;
-  return focus;
-}
-
 export function parseChatWorkout(db: Db, text: string, nowMs: number): LogWorkoutOp | null {
   const today = dayKey(nowMs);
   const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);

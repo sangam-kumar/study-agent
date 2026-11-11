@@ -10,7 +10,7 @@ import type { ChooseOption } from "./convo.ts";
 import { bedtimeFor, draftDay } from "./plan.ts";
 import type { DayKind, DraftDay, OverrideKind, Place, PlanInput, PlanReading, PlanUnit } from "./plan.ts";
 import { currentReading } from "./reading.ts";
-import { proteinFor, weeklyFitnessParts } from "./fitness.ts";
+import { proteinBand, proteinFor, weeklyFitnessParts } from "./fitness.ts";
 import { eveningOpenLines, morningTaskLine } from "./reminders.ts";
 import { queryPlan } from "./seed.ts";
 import { addDays, dateLabel, dayNumber, weekStart, weekdayIndex } from "./time.ts";
@@ -235,6 +235,14 @@ function bedtimeLine(db: Db, date: string): string {
 }
 
 /** The 21:30 message: how today went, and tomorrow as it will be locked. */
+/** Below the floor: the total and a nudge to add. In the band: one quiet line, no prompt. */
+function proteinEveningLine(db: Db, today: string): string {
+  const { floor, ceiling } = proteinBand(db);
+  const t = Math.round(proteinFor(db, today) ?? 0);
+  if (t < floor) return `🥩 Protein ${t} / ${floor} g. Add with e.g. <b>whey</b> or <b>protein 26</b>.`;
+  return t <= ceiling ? `🥩 Protein ${t} g ✓` : `🥩 Protein ${t} g (above your ${ceiling} g ceiling)`;
+}
+
 export function renderEvening(db: Db, today: string, nowMs = Date.now()): string {
   const tomorrow = addDays(today, 1);
   const todays = loadItems(db, today);
@@ -246,8 +254,7 @@ export function renderEvening(db: Db, today: string, nowMs = Date.now()): string
   const weekly = weeklyLine(db, today);
   if (weekly) lines.push(`<i>${weekly}</i>`);
   lines.push(...eveningOpenLines(db, today, nowMs));
-  const protein = proteinFor(db, today);
-  lines.push(protein === null ? "🥩 Protein today? Reply e.g. <b>protein 110</b>." : `🥩 Protein ${protein} g`);
+  lines.push(proteinEveningLine(db, today));
   lines.push("", `<b>Tomorrow — ${dateLabel(tomorrow)}</b>`, renderDayBlock(db, tomorrow));
   const bed = bedtimeLine(db, tomorrow);
   if (bed) lines.push("", bed);

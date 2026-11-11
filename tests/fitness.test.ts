@@ -226,8 +226,8 @@ test("the evening line names only what is below its floor; the recap asks for pr
   assert.ok(parts.includes("lifts 0/2"));
   assert.ok(parts.includes("mobility 0/1"));
   assert.ok(parts.some((p) => p.startsWith("protein 75 g")));
-  assert.match(renderEvening(db, "2026-11-04"), /Protein today\?/);
-  assert.match(renderEvening(db, MON), /Protein 70 g/);
+  assert.match(renderEvening(db, "2026-11-04"), /Protein 0 \/ 90 g\. Add with/);
+  assert.match(renderEvening(db, MON), /Protein 70 \/ 90 g/);
 });
 
 test("/gym and /lift read the history", () => {
@@ -370,4 +370,17 @@ test("protein: a plain set (the old behaviour) still works, and a day from befor
   assert.equal(proteinFor(db, "2026-11-01"), 210);
   assert.deepEqual(proteinEntries(db, "2026-11-01"), [{ label: "earlier total", grams: 100 }, { label: "whey", grams: 110 }]);
   assert.deepEqual(proteinBand(db), { floor: 90, ceiling: 120 }, "defaults when no target is seeded");
+});
+
+test("evening: a prompt only below the floor; in the band one quiet line", () => {
+  const db = world();
+  const set = (v: number) => applyOp(db, { type: "log_metric", date: MON, metric: "protein_g", value: v, mode: "set" }, { now: () => new Date("2026-11-02T15:00:00Z") });
+  set(52);
+  assert.match(renderEvening(db, MON), /🥩 Protein 52 \/ 90 g\. Add with e\.g\. <b>whey<\/b>/);
+  set(96);
+  const ok = renderEvening(db, MON);
+  assert.match(ok, /🥩 Protein 96 g ✓/);
+  assert.doesNotMatch(ok, /Add with/);
+  set(130);
+  assert.match(renderEvening(db, MON), /Protein 130 g \(above your 120 g ceiling\)/);
 });

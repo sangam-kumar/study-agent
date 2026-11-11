@@ -40,7 +40,7 @@ import {
 import { GitHubClient } from "./github/client.ts";
 import { mirrorDays } from "./mirror.ts";
 import {
-  closeOpenSessions, diffSessions, importGymLog, loadSession, reconcileWorkout, renameInOp,
+  closeOpenSessions, diffSessions, findPreset, importGymLog, loadSession, proteinBand, proteinEntries, proteinFor, proteinPresets, reconcileWorkout, renameInOp,
   renderGymWeek, renderLiftHistory, renderSession, unsureNames,
 } from "./fitness.ts";
 import { findExercise, loadCatalog, matchExercise, suggestExercise } from "./exercises.ts";
@@ -64,6 +64,7 @@ export interface Turn {
 /** A reply that changes something (lock the plan, mark done, pick an item) needs the classifier at least this sure. */
 const ANSWER_CONFIDENCE = 0.8;
 
+const NL = String.fromCharCode(10);
 const escapeHtml = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 export class StudyAgent extends Agent<Env> {
@@ -1174,13 +1175,36 @@ Total queued articles: <b>${count}</b>`
       }
 
       case "/protein": {
-        const grams = Number(args[0]);
-        if (!Number.isFinite(grams) || grams <= 0 || grams > 400) {
-          await telegram.sendMessage(chatId, "Usage: <code>/protein 110</code> (grams today). You can also just say <i>protein 110</i>.");
-          break;
+        // Shortcut for the same thing the plain words do. /protein 26 adds, /protein total 90 sets, /protein whey adds a preset, /protein shows the day.
+        const db = doDb(this.ctx);
+        const today = dayKey(Date.now());
+        const say = (m: string) => telegram.sendMessage(chatId, m);
+        const run = (value: number, mode: "add" | "set", label?: string) =>
+          `🥩 ${escapeHtml(this.applyPlanOp({ type: "log_metric", date: today, metric: "protein_g", value, mode, ...(label ? { label } : {}) }, { source: "telegram" }).summary)}
+<i>/undo to reverse</i>`;
+        const asGrams = (t: string | undefined) => { const n = Number(t); return Number.isFinite(n) && n > 0 && n <= 400 ? Math.round(n) : null; };
+        if (args.length === 0) {
+          const { floor, ceiling } = proteinBand(db);
+          const rows = proteinEntries(db, today);
+          const total = proteinFor(db, today) ?? 0;
+          const presets = Object.entries(proteinPresets(db)).map(([n, g]) => `${escapeHtml(n)} ${g} g`).join(" · ");
+          const bullets = rows.map((r) => `• ${escapeHtml(r.label)} ${r.grams >= 0 ? "+" : ""}${Math.round(r.grams)}`);
+          await say([
+            `🥩 <b>Protein today: ${Math.round(total)} g</b> (aim ${floor}–${ceiling})`,
+            ...(bullets.length ? bullets : ["Nothing yet."]),
+            "",
+            `<i>${presets}</i>`,
+            "<code>/protein 26</code> adds · <code>/protein whey</code> adds a preset · <code>/protein total 90</code> sets the total",
+          ].join(NL));
+        } else if (args[0].toLowerCase() === "total") {
+          const g = asGrams(args[1]);
+          await say(g === null ? "Usage: <code>/protein total 90</code> (the day's total in grams)" : run(g, "set"));
+        } else if (asGrams(args[0]) !== null) {
+          await say(run(asGrams(args[0])!, "add"));
+        } else {
+          const hit = findPreset(proteinPresets(db), args.join(" "));
+          await say(hit ? run(hit.grams, "add", hit.name) : "Usage: <code>/protein 26</code> adds · <code>/protein whey</code> adds a preset · <code>/protein total 90</code> sets the day's total");
         }
-        this.applyPlanOp({ type: "log_metric", date: dayKey(Date.now()), metric: "protein_g", value: Math.round(grams) }, { source: "telegram" });
-        await telegram.sendMessage(chatId, `🥩 Protein today: <b>${Math.round(grams)} g</b>`);
         break;
       }
 

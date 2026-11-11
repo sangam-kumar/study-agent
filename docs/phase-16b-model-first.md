@@ -130,7 +130,26 @@ After deploy: reply "ok" (swipe and plain) to the evening recap; "both" to a que
 Latencies include the live-check's 6.5 s gap between calls, so real latency is lower; measured properly in 16b.9.
 Not yet baselined (no intent exists, so they cannot pass until Part C): `ok`/`lock it`, `gn`, `office tue thu`, answers to a question.
 
-## 9. Progress notes
+## 9. What was built (differs from the plan above where noted)
+
+* **Intents added:** `metric` (protein; `log_metric`), `answer`, `status` (bed | wake), `office` (weekday names → `officeWindow`). `office` replaces the planned `place` because the existing flow sets a whole week's pattern, not single dates.
+* **`chat_log`** (migration 9): both directions, Telegram ids, tag, replied-to id, and the model's decision + latency in `parsed_json` (`outcome`, `ms`). Pruned at 14 days; cleared by `/reset logs`; exported as the `chat_log` view.
+* **Tags in use:** `evening_recap`, `morning_plan`, `pause_question`, `question`, `nudge:<id>`, `reminder:<id>`. `applyAnswer` acts on `question` (open pending), `evening_recap` (lock), `reminder:<id>` (done); a reply to anything else gets a friendly acknowledgement and changes nothing.
+* **Priority for an answer:** the swipe-replied message → the open question → the latest bot message within 6 hours.
+* **Wake:** only `/up` is handled before the model. Any other first message wakes you *after* understanding, unless the model said it was a bedtime. URLs also count as a first message.
+* **Guards:** answers that change something need classifier confidence ≥ 0.8; below that the agent asks. If every backend fails, the reply says so and lists the commands that still work (`down` flag on the inbox outcome).
+* **Kept (not message parsing):** slash-command arguments (`parseWeekdays` for `/office`), reminder time arithmetic, catalog name resolution.
+
+### Measured (Gemini flash-lite only, throttle off)
+
+* A message takes **8–13 s** end to end (classify call + extract call). Two sequential calls is the cost of the model-first design.
+* One in roughly eight calls fails transiently ("AI unavailable") on the single lite model; the results differ run to run. Production tries three Gemini models and then Workers AI, so this is absorbed there, at the price of more latency when it happens.
+
+### 16b.10 (one call instead of two): not done
+
+It needs real numbers from `chat_log.parsed_json.ms` after a few days of use, and it trades accuracy for speed. Decide with that data. The cheapest first candidate is fusing classify and extract for the tiny intents (`answer`, `status`, `office`, `metric`).
+
+## 10. Progress notes
 
 * **16b.2 done.** Removed from `src/`: `parseProtein`, `parseChatWorkout`, `parseExerciseEdit`, `amendValue`, `parseJotText`. `parseChatWorkout` lives on in `tests/helpers.ts` as a fixture (notation → op) for the fitness tests. Tests of the removed parsers were deleted; the mapping is covered by `understand` tests. `/protein` and `/lift` commands are unchanged.
 * The "last action" in `convo` (used only by the removed "no, face pull" pattern) is still recorded; the conversation block in 16b.6 supersedes it.

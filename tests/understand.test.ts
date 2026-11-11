@@ -166,7 +166,7 @@ test("when every backend is down the message goes to the inbox with an honest re
   const down: InferBackend = { name: "down", async json() { throw new Error("HTTP 429"); } };
   const db = world();
   const out = await understand({ db, backends: [down], nowMs, log: quiet }, "done with the ml book");
-  assert.deepEqual(out, { kind: "inbox", reason: "the AI is unavailable right now" });
+  assert.deepEqual(out, { kind: "inbox", reason: "the AI is unavailable right now", down: true });
   addToInbox(db, "done with the ml book", nowMs);
   assert.equal(count(db, "inbox"), 1);
 });
@@ -320,4 +320,11 @@ test("status and office: bedtime, wake, and office weekdays become outcomes; bad
   assert.deepEqual(await run(db, model("office", 0.9, { days: ["Tue", "thu", "tue"] }), "office tue thu"), { kind: "office", weekdays: [1, 3] });
   assert.deepEqual(await run(db, model("office", 0.9, { days: [] }), "working from home all week"), { kind: "office", weekdays: [] });
   assert.equal((await run(db, model("office", 0.9, { days: ["someday"] }), "office someday")).kind, "inbox");
+});
+
+test("a message nobody could read is not reported as an outage", async () => {
+  const db = world();
+  const unclear = await run(db, model("chat", 0.2, { reply: "x" }), "the thing from earlier");
+  assert.equal(unclear.kind, "inbox");
+  assert.equal(unclear.kind === "inbox" && unclear.down, undefined);
 });

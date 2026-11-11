@@ -278,9 +278,9 @@ flowchart TD
   - [x] 16b.6 `buildConversation` in classify and every lane; `live-check` with context.
   - [x] 16b.7 `answer` intent replaces word lists and the "ok" regex.
   - [x] 16b.8 `status` and `place` intents replace `BED_RE` / `OFFICE_RE`; wake check moves after understanding.
-  - [ ] 16b.9 Confidence guards and the offline fallback.
-  - [ ] 16b.10 Experiment: one model call instead of two (flagged, measured).
-  - [ ] 16b.11 `/help`, docs.
+  - [x] 16b.9 Confidence guards and the offline fallback.
+  - [ ] 16b.10 Experiment: one model call instead of two. Deferred: decide from `chat_log` latency after real use (8–13 s per message measured).
+  - [x] 16b.11 `/help`, docs.
 * **Check:** the phrase list in the phase doc §7, then read `chat_log` from the export.
 
 ### Phase 17: Feedback intent and protein as additions [B4, B5, P-1, P-2]

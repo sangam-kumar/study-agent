@@ -44,7 +44,7 @@ export type Outcome =
   | { kind: "reply"; html: string }
   /** A question whose answer is a short reply; the agent stores the pending question (convo.ts). */
   | { kind: "choose"; html: string; pending: Extract<Pending, { kind: "choose_item" }> }
-  | { kind: "inbox"; reason: string };
+  | { kind: "inbox"; reason: string; /** every model backend failed to answer (not a problem with the message) */ down?: boolean };
 
 export interface UnderstandDeps {
   db: Db;
@@ -557,7 +557,7 @@ export async function understand(deps: UnderstandDeps, text: string): Promise<Ou
     if (e instanceof InferError) {
       log(`understand: ${e.message}`);
       const down = e.attempts.every((a) => a.kind === "transport");
-      return { kind: "inbox", reason: down ? "the AI is unavailable right now" : "I couldn't make sense of that" };
+      return { kind: "inbox", reason: down ? "the AI is unavailable right now" : "I couldn't make sense of that", ...(down ? { down: true } : {}) };
     }
     throw e;
   }

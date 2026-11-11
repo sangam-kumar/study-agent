@@ -483,7 +483,12 @@ Total queued articles: <b>${count}</b>`
         return;
       case "inbox":
         addToInbox(db, text, nowMs);
-        await telegram.sendMessage(chatId, `🗂 Saved to your inbox — ${escapeHtml(outcome.reason)}. Nothing was changed.${heard}`);
+        await telegram.sendMessage(
+          chatId,
+          outcome.down
+            ? `⚠️ I could not reach the AI, so I did not read that. Saved to your inbox, nothing was changed. These work without it: /lock · /protein 110 · /lift · /gym · /office tue thu · /done · /remind · /snooze · /undo. Send it again in a minute.${heard}`
+            : `🗂 Saved to your inbox — ${escapeHtml(outcome.reason)}. Nothing was changed.${heard}`,
+        );
         return;
     }
   }
@@ -907,7 +912,9 @@ Total queued articles: <b>${count}</b>`
           "• <i>finished the 100 page ML book</i> · <i>drop Sapiens, boring</i> · <i>did 3 DSA problems</i>",
           "• <i>remind me at 6:30 pm to play ball</i> · <i>remind me Friday at 4pm to submit the form</i>",
           "• <i>knee hurts, go easy on legs</i>",
-          "If I'm unsure I save it to /inbox and change nothing. Send a URL to queue it.",
+          "• Short replies are read against what I last said: <i>ok</i> locks tomorrow after the evening message, <i>done</i> on a reminder, <i>both</i> / <i>the second</i> on a question. Swipe-reply to a message to answer that exact one.",
+          "• <i>good night</i> / <i>up</i> · <i>working from home all week</i> · <i>today's workout: legs and shoulders</i>",
+          "If I'm unsure I save it to /inbox and change nothing. If I can't reach the AI I say so; the slash commands above still work. Send a URL to queue it.",
         ].join("\n");
         await telegram.sendMessage(chatId, helpMessage);
         break;

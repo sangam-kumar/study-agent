@@ -313,3 +313,13 @@ test("ordinary sentences are not edits", () => {
   ]) assert.equal(parseExerciseEdit(db, t, DAY, ["Face Full"]), null, t);
   assert.equal(parseExerciseEdit(db, "set 2 of seated row was 10 reps", "2026-11-04"), null, "no session that day");
 });
+
+test("workout announcement without sets is recognised", async () => {
+  const { parseWorkoutAnnouncement } = await import("../src/fitness.ts");
+  assert.equal(parseWorkoutAnnouncement("Today's workout\nLegs/Shoulders"), "Legs/Shoulders");
+  assert.equal(parseWorkoutAnnouncement("workout today: back and biceps."), "back and biceps");
+  assert.equal(parseWorkoutAnnouncement("todays gym - chest"), "chest");
+  assert.equal(parseWorkoutAnnouncement("Today's workout\nbench 20x12"), null);
+  assert.equal(parseWorkoutAnnouncement("today's workout"), null);
+  assert.equal(parseWorkoutAnnouncement("how was today's workout going to be"), null);
+});
